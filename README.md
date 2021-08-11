@@ -15,8 +15,8 @@ Here are some ideas to get you started:
 
 ### Hello GitHub World! 👯
 
-![Anurag's github stats](https://github-readme-stats.vercel.app/api?username=gitoffthelawn&show_icons=true&title_color=ff0&icon_color=79ff9a&text_color=d2d2d2&bg_color=151515)
+![Anurag's github stats](https://github-readme-stats.vercel.app/api?username=gitoffthelawn&show_icons=true&title_color=ff0&icon_color=a0ffaa&text_color=dfd&bg_color=151515)
 
 
-To contact me, please see:  
+*To contact me, please see:*  
 https://github.com/Gitoffthelawn/Contact-Gitoffthelawn
