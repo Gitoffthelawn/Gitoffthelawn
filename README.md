@@ -22,3 +22,12 @@ Here are some ideas to get you started:
 
 *To contact me, please see:*  
 https://github.com/Gitoffthelawn/Contact-Gitoffthelawn
+
+
+<!--
+<img align="center" src="https://github-readme-stats.vercel.app/api?username=gitoffthelawn&show_icons=true&line_height=33&count_private=false&theme=dark" alt="Gitoffthelawn's GitHub Stats" />
+
+<img align="center" src="https://github-readme-stats.vercel.app/api/top-langs/?username=gitoffthelawn&hide=cmake&langs_count=4&line_height=35&theme=dark" />
+
+<img align="left" hspace="5" src="https://github-readme-stats.vercel.app/api?username=gitoffthelawn&count_private=false&show_icons=true&theme=dark&include_all_commits=false&hide_rank=true">
+-->
