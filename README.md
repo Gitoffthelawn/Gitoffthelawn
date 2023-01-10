@@ -15,7 +15,7 @@ Here are some ideas to get you started:
 
 ### Hello GitHub World! 👯
 
-![Gitoffthelawn's github stats](https://github-readme-stats.vercel.app/api?username=gitoffthelawn&show_icons=true&title_color=ff0&icon_color=a0ffaa&text_color=dfd&bg_color=151515)
+![Gitoffthelawn's GitHub stats](https://github-readme-stats.vercel.app/api?username=gitoffthelawn&show_icons=true&title_color=ff0&icon_color=a0ffaa&text_color=dfd&bg_color=151515)
 
 <img src="https://github-readme-streak-stats.herokuapp.com/?user=gitoffthelawn&theme=dark" />
 
