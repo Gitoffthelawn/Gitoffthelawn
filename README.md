@@ -19,9 +19,9 @@ Here are some ideas to get you started:
 
 <img src="https://github-readme-streak-stats.herokuapp.com/?user=gitoffthelawn&theme=dark" />
 
+[My helpful GitHub star collections](https://github.com/Gitoffthelawn?tab=stars)
 
-*To contact me, please see:*  
-https://github.com/Gitoffthelawn/Contact-Gitoffthelawn
+[To contact me, please click here](https://github.com/Gitoffthelawn/Contact-Gitoffthelawn)
 
 
 <!--
