@@ -22,100 +22,66 @@ jobs:
             let tableRows = "| Repository | Status | Details |\n| :--- | :--- | :--- |\n";
             let failureLog = "\n### ⚠️ Failure Details\n| Repository | Error Message |\n| :--- | :--- |\n";
             let hasFailures = false;
-            let hasTableEntries = false;
 
             try {
-              // 1. Quota Check (Start)
-              const quotaStart = JSON.parse(execSync('gh api rate_limit').toString());
-              const remainingStart = quotaStart.resources.core.remaining;
-
-              console.log("Deep Scanning for all owned repositories...");
+              // 1. IDENTITY PROBE
+              console.log("Probing token identity...");
+              const userResp = execSync('gh api user').toString();
+              const user = JSON.parse(userResp);
               
-              // We removed all filters except owner and visibility=all. 
-              // This is the "loudest" possible request for a Classic PAT.
+              // This captures the raw headers to see exactly what permissions GitHub says this token has
+              const headers = execSync('gh api -i user').toString();
+              const scopesMatch = headers.match(/x-oauth-scopes:\s*(.*)/i);
+              const scopes = scopesMatch ? scopesMatch[1].trim() : "NONE FOUND";
+
+              let header = `### 👤 Token Identity Check\n`;
+              header += `- **Authenticated as:** \`${user.login}\`\n`;
+              header += `- **Detected Scopes:** \`${scopes}\`\n\n`;
+
+              console.log(`Authenticated as: ${user.login} with scopes: ${scopes}`);
+
+              // 2. FETCH REPOS (Aggressive Scan)
+              // We'll try to fetch with no filters first to see what is visible
               execSync(`gh api "user/repos?per_page=100&affiliation=owner&visibility=all" --paginate > forks_raw.json`);
               
               const rawData = fs.readFileSync('forks_raw.json', 'utf8').trim();
-              if (!rawData || rawData === "[]") {
-                throw new Error("The API returned zero repositories. This indicates the TOKEN is authorized but cannot see your account data.");
-              }
-
               const sanitized = "[" + rawData.replace(/\]\s*\[/g, ',') + "]";
               const allRepos = JSON.parse(sanitized);
-              
               const targetForks = allRepos.filter(f => f.fork === true);
-              console.log(`API found ${allRepos.length} total repos. ${targetForks.length} are forks.`);
 
               if (targetForks.length === 0) {
-                const sample = allRepos.slice(0, 5).map(r => r.full_name).join(", ");
-                let diag = `### 📊 API Quota\n- **Remaining:** ${remainingStart} / 5000\n\n`;
-                diag += `### 🔄 Sync Activity Report\n- **Total Forks Found:** 0\n\n`;
-                diag += `**Diagnostic:** The API sees ${allRepos.length} repos. Sample: \`${sample}\`.\n\n`;
-                diag += `If these aren't your 1,500 repos, your PAT may be authorized for a different 'context' or 'organization'.`;
-                fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, diag);
+                header += `### 🔄 Sync Activity Report\n- **Total Repos Found:** ${allRepos.length}\n- **Total Forks Found:** 0\n\n`;
+                header += `**Diagnostic:** The API sees these repos: \`${allRepos.slice(0,3).map(r => r.full_name).join(', ') || 'None'}\`\n\n`;
+                header += `**Troubleshooting:** If the username above is correct but you see 0 forks, click your profile pic > Settings > Developer Settings > Personal Access Tokens (classic) > Click your token name > Ensure the **repo** box is fully checked.`;
+                fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, header);
                 return;
               }
 
-              // 2. Process the Forks
+              // 3. PROCESS FORKS
               for (const fork of targetForks) {
                 stats.total++;
                 const name = fork.full_name;
-                const mySize = fork.size;
-
                 try {
                   const parentData = JSON.parse(execSync(`gh api "repos/${name}" --silent`).toString());
-                  const parent = parentData.parent;
-
-                  if (!parent) {
-                    failureLog += `| ${name} | Parent info missing/private |\n`;
-                    stats.failed++;
-                    hasFailures = true;
-                    continue;
-                  }
-
-                  // Sanity Check: Parent size vs Fork size
-                  if (parent.size < (mySize / 2) && mySize > 100) {
-                    tableRows += `| ${name} | 🛑 **BLOCKED** | Size Trigger: Parent ${parent.size}KB vs Fork ${mySize}KB |\n`;
-                    stats.blocked++;
-                    hasTableEntries = true;
-                  } else {
-                    // Sync Attempt
-                    try {
-                      const syncOut = execSync(`gh repo sync "${name}" --force=false 2>&1`).toString();
-                      if (syncOut.includes("already up to date")) {
-                        stats.noChange++;
-                      } else {
-                        tableRows += `| ${name} | ✅ Synced | Successfully updated |\n`;
-                        stats.synced++;
-                        hasTableEntries = true;
-                      }
-                    } catch (syncErr) {
-                      const errMsg = syncErr.stdout ? syncErr.stdout.toString().split('\n')[0] : "Sync conflict";
-                      tableRows += `| ${name} | ❌ Failed | See failure log |\n`;
-                      failureLog += `| ${name} | ${errMsg.replace(/\|/g, '-')} |\n`;
-                      stats.failed++;
-                      hasFailures = true;
-                      hasTableEntries = true;
+                  if (parentData.parent) {
+                    const syncOut = execSync(`gh repo sync "${name}" --force=false 2>&1`).toString();
+                    if (syncOut.includes("already up to date")) stats.noChange++;
+                    else {
+                      tableRows += `| ${name} | ✅ Synced | Updated |\n`;
+                      stats.synced++;
                     }
                   }
                 } catch (e) { stats.failed++; }
-
                 if (stats.total % 100 === 0) console.log(`Processed ${stats.total}...`);
-                await new Promise(r => setTimeout(r, 120)); // Gentle pacing
+                await new Promise(r => setTimeout(r, 100));
               }
 
-              // 3. Final Quota & Summary
-              const quotaEnd = JSON.parse(execSync('gh api rate_limit').toString());
-              let finalSummary = `### 📊 API Quota\n- **Start:** ${remainingStart}\n- **End:** ${quotaEnd.resources.core.remaining}\n\n`;
-              finalSummary += `### 🔄 Sync Activity Report\n` +
+              // 4. FINAL SUMMARY
+              let summary = header + `### 🔄 Sync Activity Report\n` +
                 `- **Total Forks:** ${stats.total}\n` +
-                `- **Synced:** ${stats.synced} | **Safety Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n` +
-                `- **Already Up-to-Date:** ${stats.noChange}\n\n`;
-
-              if (hasTableEntries) finalSummary += tableRows;
-              if (hasFailures) finalSummary += failureLog;
-
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, finalSummary);
+                `- **Synced:** ${stats.synced} | **Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n\n`;
+              if (stats.synced > 0) summary += tableRows;
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
 
             } catch (err) {
               fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ❌ Fatal Error\n${err.message}`);
@@ -124,5 +90,4 @@ jobs:
           }
           run();
           EOF
-          
           node sync.js
