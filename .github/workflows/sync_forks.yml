@@ -25,21 +25,25 @@ jobs:
             let hasTableEntries = false;
 
             try {
-              console.log("Fetching list of forks to disk (bypassing buffer limits)...");
-              const user = JSON.parse(execSync('gh api user').toString()).login;
+              console.log("Fetching deep list of forks (all visibility)...");
               
-              // Direct shell redirection to file handles any number of repos
-              execSync(`gh api "users/${user}/repos?per_page=100" --paginate > forks_raw.json`);
+              // Using /user/repos with type=owner ensures we see all 1500+ repositories you actually own
+              execSync(`gh api "user/repos?per_page=100&type=owner" --paginate > forks_raw.json`);
               
               const rawData = fs.readFileSync('forks_raw.json', 'utf8').trim();
               if (!rawData) throw new Error("API returned no data.");
 
-              // Handle paginated JSON arrays (stitches ][ into ,)
+              // Fix paginated JSON stitching
               const sanitized = "[" + rawData.replace(/\]\s*\[/g, ',') + "]";
-              const forks = JSON.parse(sanitized);
-              const targetForks = forks.filter(f => f.fork === true);
+              const allRepos = JSON.parse(sanitized);
               
-              console.log(`Found ${targetForks.length} forks. Processing...`);
+              // Filter for forks
+              const targetForks = allRepos.filter(f => f.fork === true);
+              console.log(`Found ${targetForks.length} total forks.`);
+
+              if (targetForks.length === 0) {
+                console.log("Verified: No forks found in the repository list.");
+              }
 
               for (const fork of targetForks) {
                 stats.total++;
@@ -47,27 +51,22 @@ jobs:
                 const mySize = fork.size;
 
                 try {
-                  // 1. Get Parent Info
                   const parentData = JSON.parse(execSync(`gh api "repos/${name}" --silent`).toString());
                   const parent = parentData.parent;
 
                   if (!parent) {
-                    failureLog += `| ${name} | Upstream parent no longer exists or is private |\n`;
+                    failureLog += `| ${name} | Parent data inaccessible |\n`;
                     stats.failed++;
                     hasFailures = true;
                     continue;
                   }
 
                   const parentSize = parent.size;
-                  const threshold = mySize / 2;
-
-                  // 2. Sanity Check
-                  if (parentSize < threshold && mySize > 100) {
-                    tableRows += `| ${name} | 🛑 **BLOCKED** | Parent size (${parentSize}KB) < 50% of fork (${mySize}KB) |\n`;
+                  if (parentSize < (mySize / 2) && mySize > 100) {
+                    tableRows += `| ${name} | 🛑 **BLOCKED** | Parent size (${parentSize}KB) < 50% of fork |\n`;
                     stats.blocked++;
                     hasTableEntries = true;
                   } else {
-                    // 3. Sync Attempt
                     try {
                       const syncOut = execSync(`gh repo sync "${name}" --force=false 2>&1`).toString();
                       if (syncOut.includes("already up to date")) {
@@ -78,42 +77,30 @@ jobs:
                         hasTableEntries = true;
                       }
                     } catch (syncErr) {
-                      const errMsg = syncErr.stdout ? syncErr.stdout.toString().split('\n')[0] : "Merge conflict or scope issue";
-                      tableRows += `| ${name} | ❌ Failed | See failure log below |\n`;
+                      const errMsg = syncErr.stdout ? syncErr.stdout.toString().split('\n')[0] : "Sync conflict";
+                      tableRows += `| ${name} | ❌ Failed | See failure log |\n`;
                       failureLog += `| ${name} | ${errMsg.replace(/\|/g, '-')} |\n`;
                       stats.failed++;
                       hasFailures = true;
-                      hasTableEntries = true;
                     }
                   }
                 } catch (e) {
-                  failureLog += `| ${name} | API error: ${e.message} |\n`;
                   stats.failed++;
-                  hasFailures = true;
                 }
 
                 if (stats.total % 100 === 0) console.log(`Processed ${stats.total}...`);
-                await new Promise(r => setTimeout(r, 100)); // Respect API limits
+                await new Promise(r => setTimeout(r, 150));
               }
 
-              // Build Final Summary
               let finalSummary = `### 🔄 Sync Activity Report\n` +
-                `- **Total Forks:** ${stats.total}\n` +
-                `- **Synced:** ${stats.synced} | **Safety Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n` +
-                `- **Already Up-to-Date:** ${stats.noChange}\n\n`;
+                `- **Total Forks Found:** ${stats.total}\n` +
+                `- **Synced:** ${stats.synced} | **Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n\n`;
 
-              if (hasTableEntries) {
-                finalSummary += tableRows + "\n\n";
-              } else {
-                finalSummary += "_All repositories are currently synchronized or skipped._\n\n";
-              }
-
-              if (hasFailures) {
-                finalSummary += failureLog;
-              }
+              if (hasTableEntries) finalSummary += tableRows + "\n\n";
+              if (hasFailures) finalSummary += failureLog;
 
               fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, finalSummary);
-              console.log("Sync process completed successfully.");
+              console.log("Done.");
 
             } catch (err) {
               console.error("Fatal Error:", err.message);
