@@ -1,0 +1,98 @@
+name: Safe Sync Forks
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-forks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync and Detect Fork Status
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          # 1. Fetch ALL forks
+          forks_json=$(gh api graphql --paginate --slurp -f query='
+            query($endCursor: String) {
+              viewer {
+                repositories(first: 100, isFork: true, after: $endCursor) {
+                  nodes {
+                    nameWithOwner
+                    diskUsage
+                    defaultBranchRef { name }
+                    parent {
+                      nameWithOwner
+                      diskUsage
+                    }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          ')
+
+          # Initialize Counters
+          TOTAL=0; SYNCED=0; NO_CHANGE=0; BLOCKED=0; FAILED=0
+
+          # Temporary file to store table rows
+          echo "| Repository | Status | Details |" > table_body.md
+          echo "| :--- | :--- | :--- |" >> table_body.md
+
+          # 2. Process Repos
+          echo "$forks_json" | jq -c '.[].data.viewer.repositories.nodes[]' | while read -r repo; do
+            ((TOTAL++))
+            NAME=$(echo $repo | jq -r '.nameWithOwner')
+            MY_SIZE=$(echo $repo | jq -r '.diskUsage')
+            PARENT_NAME=$(echo $repo | jq -r '.parent.nameWithOwner // "null"')
+            PARENT_SIZE=$(echo $repo | jq -r '.parent.diskUsage // 0')
+            
+            # Check: Parent deleted
+            if [ "$PARENT_NAME" == "null" ]; then
+              echo "| $NAME | ⚠️ Skipped | Parent repo no longer exists |" >> table_body.md
+              ((FAILED++))
+              continue
+            fi
+
+            # 3. Sanity Check: Mass deletion (Parent < 50% of fork)
+            THRESHOLD=$((MY_SIZE / 2))
+            if [ "$PARENT_SIZE" -lt "$THRESHOLD" ]; then
+              echo "| $NAME | 🛑 **BLOCKED** | Size Trigger: Parent ${PARENT_SIZE}KB vs Fork ${MY_SIZE}KB |" >> table_body.md
+              ((BLOCKED++))
+              continue
+            fi
+
+            # 4. Sync Attempt
+            SYNC_OUTPUT=$(gh repo sync "$NAME" --force=false 2>&1)
+            SYNC_EXIT=$?
+
+            if [ $SYNC_EXIT -eq 0 ]; then
+              if echo "$SYNC_OUTPUT" | grep -q "already up to date"; then
+                echo "| $NAME | ✨ No Change | Fork is newer or equal to parent |" >> table_body.md
+                ((NO_CHANGE++))
+              else
+                echo "| $NAME | ✅ Synced | Successfully updated |" >> table_body.md
+                ((SYNCED++))
+              fi
+            else
+              echo "| $NAME | ❌ Failed | Merge conflict detected |" >> table_body.md
+              ((FAILED++))
+            fi
+            
+            # Export counters to shell env for the next loop iteration (bash subshell workaround)
+            echo "TOTAL=$TOTAL; SYNCED=$SYNCED; NO_CHANGE=$NO_CHANGE; BLOCKED=$BLOCKED; FAILED=$FAILED" > counts.tmp
+          done
+
+          # Load final counts
+          source counts.tmp
+
+          # 5. Build Final Summary
+          echo "### 📊 Sync Activity Report" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Forks Processed:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Successfully Synced:** $SYNCED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Already Up-to-Date/Newer:** $NO_CHANGE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Blocked by Sanity Check:** $BLOCKED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Failed/Conflicts:** $FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat table_body.md >> $GITHUB_STEP_SUMMARY
