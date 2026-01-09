@@ -9,90 +9,86 @@ jobs:
   sync-forks:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync All Forks (REST Version)
+      - name: Sync All Forks
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           # 1. Quota Check
           echo "### 📊 API Quota at Start" >> $GITHUB_STEP_SUMMARY
-          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY
+          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY || echo "Could not fetch quota"
 
-          # Initialize counters and report body
+          # Initialize counters
+          echo "TOTAL=0; SYNCED=0; NO_CHANGE=0; BLOCKED=0; FAILED=0" > counts.tmp
           echo "| Repository | Status | Details |" > table_body.md
           echo "| :--- | :--- | :--- |" >> table_body.md
-          echo "TOTAL=0; SYNCED=0; NO_CHANGE=0; BLOCKED=0; FAILED=0" > counts.tmp
 
-          # 2. Get list of all forks via REST
+          # 2. Get list of all forks
           USER_LOGIN=$(gh api user --jq '.login')
-          echo "Fetching list of all forks for $USER_LOGIN..."
+          echo "Fetching forks for $USER_LOGIN..."
+          
+          # Fetching in blocks of 100
           gh api "users/$USER_LOGIN/repos?per_page=100" --paginate --jq '.[] | select(.fork == true) | {full_name: .full_name, size: .size}' > all_forks.json
+
+          if [ ! -s all_forks.json ]; then
+            echo "❌ Error: all_forks.json is empty. Check PAT scopes."
+            exit 1
+          fi
 
           # 3. Process each fork
           while read -r fork; do
             source counts.tmp
             ((TOTAL++))
             
-            NAME=$(echo $fork | jq -r '.full_name')
-            MY_SIZE=$(echo $fork | jq -r '.size')
+            NAME=$(echo "$fork" | jq -r '.full_name')
+            MY_SIZE=$(echo "$fork" | jq -r '.size')
 
-            # Fetch Parent Info specifically for this repo
-            PARENT_DATA=$(gh api "repos/$NAME" --jq '{full_name: .parent.full_name, size: .parent.size}' 2>/dev/null || echo "null")
-            PARENT_NAME=$(echo $PARENT_DATA | jq -r '.full_name // "null"')
+            # Fetch Parent info specifically for the safety check
+            PARENT_DATA=$(gh api "repos/$NAME" --silent --jq '{full_name: .parent.full_name, size: .parent.size}' 2>/dev/null || echo "null")
+            PARENT_NAME=$(echo "$PARENT_DATA" | jq -r '.full_name // "null"')
             
             if [ "$PARENT_NAME" == "null" ]; then
               ((FAILED++))
-              continue
-            fi
-
-            PARENT_SIZE=$(echo $PARENT_DATA | jq -r '.size // 0')
-
-            # 4. Sanity Check: Mass deletion (Parent < 50% of fork)
-            THRESHOLD=$((MY_SIZE / 2))
-            if [ "$PARENT_SIZE" -lt "$THRESHOLD" ] && [ "$MY_SIZE" -gt 100 ]; then
-              echo "| $NAME | 🛑 **BLOCKED** | Parent size drop: ${PARENT_SIZE}KB vs Fork ${MY_SIZE}KB |" >> table_body.md
-              ((BLOCKED++))
-              echo "TOTAL=$TOTAL; SYNCED=$SYNCED; NO_CHANGE=$NO_CHANGE; BLOCKED=$BLOCKED; FAILED=$FAILED" > counts.tmp
-              continue
-            fi
-
-            # 5. Sync Attempt (Non-destructive)
-            SYNC_OUTPUT=$(gh repo sync "$NAME" --force=false 2>&1)
-            SYNC_EXIT=$?
-
-            if [ $SYNC_EXIT -eq 0 ]; then
-              if echo "$SYNC_OUTPUT" | grep -q "already up to date"; then
-                ((NO_CHANGE++))
-              else
-                echo "| $NAME | ✅ Synced | Successfully updated |" >> table_body.md
-                ((SYNCED++))
-              fi
             else
-              # Often fails if PAT lacks 'workflow' scope and parent changed a workflow file
-              echo "| $NAME | ❌ Failed | Conflict or Workflow permission issue |" >> table_body.md
-              ((FAILED++))
+              PARENT_SIZE=$(echo "$PARENT_DATA" | jq -r '.size // 0')
+              THRESHOLD=$((MY_SIZE / 2))
+
+              # Sanity Check
+              if [ "$PARENT_SIZE" -lt "$THRESHOLD" ] && [ "$MY_SIZE" -gt 100 ]; then
+                echo "| $NAME | 🛑 **BLOCKED** | Parent size drop: ${PARENT_SIZE}KB |" >> table_body.md
+                ((BLOCKED++))
+              else
+                # Actual Sync
+                if SYNC_OUT=$(gh repo sync "$NAME" --force=false 2>&1); then
+                  if echo "$SYNC_OUT" | grep -q "already up to date"; then
+                    ((NO_CHANGE++))
+                  else
+                    echo "| $NAME | ✅ Synced | Successfully updated |" >> table_body.md
+                    ((SYNCED++))
+                  fi
+                else
+                  echo "| $NAME | ❌ Failed | Conflict or Permission issue |" >> table_body.md
+                  ((FAILED++))
+                fi
+              fi
             fi
             
             echo "TOTAL=$TOTAL; SYNCED=$SYNCED; NO_CHANGE=$NO_CHANGE; BLOCKED=$BLOCKED; FAILED=$FAILED" > counts.tmp
             
-            # Small delay to prevent hitting secondary rate limits
-            sleep 0.25
+            # 100ms delay to prevent Abuse limits on large accounts
+            sleep 0.1
           done < all_forks.json
 
           # 4. Final Report
           source counts.tmp
           echo "### 🔄 Sync Activity Report" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Forks Processed:** $TOTAL" >> $GITHUB_STEP_SUMMARY
-          echo "- **Actual Syncs Performed:** $SYNCED" >> $GITHUB_STEP_SUMMARY
-          echo "- **Safety Blocked (Potential Deletions):** $BLOCKED" >> $GITHUB_STEP_SUMMARY
-          echo "- **Conflicts/Errors:** $FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Forks:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Synced:** $SYNCED | **Safety Blocked:** $BLOCKED | **Conflicts:** $FAILED" >> $GITHUB_STEP_SUMMARY
           echo "- **Already Up-to-Date:** $NO_CHANGE (Hidden from table)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ "$SYNCED" -gt 0 ] || [ "$BLOCKED" -gt 0 ] || [ "$FAILED" -gt 0 ]; then
+          # Only append table if it contains data (more than just the header)
+          if [ $(wc -l < table_body.md) -gt 2 ]; then
             cat table_body.md >> $GITHUB_STEP_SUMMARY
-          else
-            echo "_No repositories required syncing or triggered safety blocks today._" >> $GITHUB_STEP_SUMMARY
           fi
 
-          echo "### 📊 API Quota at End" >> $GITHUB_STEP_SUMMARY
-          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY
+          gh api rate_limit --jq '"### 📊 API Quota at End\nRemaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY
