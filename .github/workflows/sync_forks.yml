@@ -2,12 +2,13 @@ name: Safe Sync Forks
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '17 4 * * *' # Random time of 04_17 UTC to avoid peak traffic delays at 00_00 UTC
   workflow_dispatch:
 
 jobs:
   sync-forks:
     runs-on: ubuntu-latest
+    timeout-minutes: 60 # Long enough for 1400 repos, but prevents infinite hangs
     steps:
       - name: Sync All Forks
         env:
@@ -19,18 +20,15 @@ jobs:
 
           async function run() {
             const token = process.env.MY_PAT;
-            let stats = { total: 0, synced: 0, upToDate: 0, blocked: 0, failed: 0 };
+            let stats = { total: 0, synced: 0, upToDate: 0, blocked: 0, failed: 0, consecutiveFailures: 0 };
             let tableRows = "| Repository | Status | Details |\n| :--- | :--- | :--- |\n";
-            let failureLog = "\n### ⚠️ Failure Details\n| Repository | Error Message |\n| :--- | :--- |\n";
             let hasFailures = false;
 
             try {
-              // 1. Quota Check (Start)
               const qStart = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/rate_limit`).toString()).resources.core;
-
-              console.log("Fetching all owned repositories...");
+              
               let allRepos = [];
-              for (let page = 1; page <= 25; page++) {
+              for (let page = 1; page <= 30; page++) {
                 const cmd = `curl -s -H "Authorization: token ${token}" "https://api.github.com/user/repos?per_page=100&page=${page}&affiliation=owner"`;
                 const part = JSON.parse(execSync(cmd).toString());
                 if (!Array.isArray(part) || part.length === 0) break;
@@ -38,82 +36,61 @@ jobs:
               }
 
               const targetForks = allRepos.filter(f => f.fork === true);
-              console.log(`Found ${targetForks.length} forks. Analyzing and Syncing...`);
+              const totalToProcess = targetForks.length;
+              console.log(`Starting sync for ${totalToProcess} forks...`);
 
-              for (const fork of targetForks) {
+              for (let i = 0; i < totalToProcess; i++) {
+                // Safety: Stop if we hit too many errors in a row
+                if (stats.consecutiveFailures >= 10) {
+                  console.error("Stopping: Hit 10 consecutive failures. Check token/network.");
+                  break;
+                }
+
+                const fork = targetForks[i];
                 stats.total++;
                 const name = fork.full_name;
                 
                 try {
-                  // 2. THE SAFETY CODE (Protect against obliterated upstreams)
+                  // 1. Safety Code (Size Check)
                   const repoData = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/repos/${name}`).toString());
-                  const parent = repoData.parent;
-
-                  if (parent) {
-                    const mySize = fork.size;
-                    const parentSize = parent.size;
-                    
-                    // Safety logic: If parent is < 50% of fork size, it's likely been wiped
-                    if (parentSize < (mySize / 2) && mySize > 100) {
-                      tableRows += `| ${name} | 🛑 **BLOCKED** | Safety: Parent size (${parentSize}KB) < 50% of fork (${mySize}KB) |\n`;
-                      stats.blocked++;
-                      continue; 
-                    }
-                  } else {
-                    failureLog += `| ${name} | Upstream parent no longer exists or is private |\n`;
-                    stats.failed++;
-                    hasFailures = true;
+                  if (repoData.parent && repoData.parent.size < (fork.size / 2) && fork.size > 100) {
+                    stats.blocked++;
+                    stats.consecutiveFailures = 0;
                     continue;
                   }
 
-                  // 3. Sync Attempt
+                  // 2. Sync Attempt
                   const syncCmd = `curl -s -X POST -H "Authorization: token ${token}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/${name}/merge-upstream -d '{"branch":"${fork.default_branch}"}'`;
                   const result = JSON.parse(execSync(syncCmd).toString());
                   
                   if (result.message && result.message.includes("Successfully merged")) {
-                    tableRows += `| ${name} | ✅ Synced | New changes merged |\n`;
+                    tableRows += `| ${name} | ✅ Synced | Updated |\n`;
                     stats.synced++;
-                  } else if (result.message && (result.message.includes("already up to date") || result.message.includes("nothing to fetch"))) {
-                    stats.upToDate++;
+                    stats.consecutiveFailures = 0;
                   } else {
-                    failureLog += `| ${name} | ${result.message || "Conflict or Branch issue"} |\n`;
-                    stats.failed++;
-                    hasFailures = true;
+                    stats.upToDate++;
+                    stats.consecutiveFailures = 0;
                   }
                 } catch (e) {
                   stats.failed++;
+                  stats.consecutiveFailures++;
                 }
                 
-                if (stats.total % 100 === 0) console.log(`Progress: ${stats.total}/${targetForks.length}`);
-                await new Promise(r => setTimeout(r, 50)); // Prevent secondary rate limits
+                if (stats.total % 50 === 0) {
+                  const percent = Math.round((stats.total / totalToProcess) * 100);
+                  console.log(`Progress: ${percent}% (${stats.total}/${totalToProcess})`);
+                }
+                await new Promise(r => setTimeout(r, 60)); 
               }
 
-              // 4. Final Quota & Summary
               const qEnd = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/rate_limit`).toString()).resources.core;
-
-              let finalSummary = `### 📊 API Quota Status\n`;
-              finalSummary += `- **Starting Quota:** ${qStart.remaining}\n`;
-              finalSummary += `- **Ending Quota:** ${qEnd.remaining} (Used: ${qStart.remaining - qEnd.remaining})\n\n`;
-
-              finalSummary += `### 🔄 Sync Activity Report\n` +
-                `- **Total Forks Processed:** ${stats.total}\n` +
-                `- **Successfully Synced:** ${stats.synced}\n` +
-                `- **Already Up-to-Date:** ${stats.upToDate}\n` +
-                `- **Safety Blocked:** ${stats.blocked}\n` +
-                `- **Errors/Conflicts:** ${stats.failed}\n\n`;
-
-              if (stats.synced > 0 || stats.blocked > 0) {
-                finalSummary += "#### ✅ Notable Changes\n" + tableRows + "\n\n";
-              } else {
-                finalSummary += "_All repositories were verified as synchronized._\n\n";
-              }
-
-              if (hasFailures) finalSummary += failureLog;
+              let summary = `### 📊 API Quota\n- **Used:** ${qStart.remaining - qEnd.remaining} points\n- **Remaining:** ${qEnd.remaining}\n\n`;
+              summary += `### 🔄 Sync Activity Report\n- **Total Forks:** ${stats.total}\n- **Synced:** ${stats.synced} | **Up-to-Date:** ${stats.upToDate} | **Blocked:** ${stats.blocked} | **Failed:** ${stats.failed}\n\n`;
               
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, finalSummary);
-
+              if (stats.synced > 0 || stats.blocked > 0) summary += "#### ✅ Notable Changes\n" + tableRows;
+              
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
             } catch (err) {
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ❌ Fatal Error\n${err.message}`);
               process.exit(1);
             }
           }
