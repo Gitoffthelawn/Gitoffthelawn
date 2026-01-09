@@ -9,84 +9,96 @@ jobs:
   sync-forks:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync All Forks
+      - name: Sync All Forks (Node.js Version)
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
-          # 1. Quota Check
-          echo "### 📊 API Quota at Start" >> $GITHUB_STEP_SUMMARY
-          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY || true
+          cat << 'EOF' > sync.js
+          const { execSync } = require('child_process');
+          const fs = require('fs');
 
-          # Initialize counters and report
-          TOTAL=0; SYNCED=0; NO_CHANGE=0; BLOCKED=0; FAILED=0
-          echo "| Repository | Status | Details |" > table_body.md
-          echo "| :--- | :--- | :--- |" >> table_body.md
+          async function run() {
+            try {
+              console.log("Fetching list of forks...");
+              // Get user login
+              const user = JSON.parse(execSync('gh api user').toString()).login;
+              // Get all forks (handles pagination automatically via --paginate)
+              const forksRaw = execSync(`gh api "users/${user}/repos?per_page=100" --paginate`).toString();
+              
+              // Handle potential concatenated JSON arrays from --paginate
+              const forks = JSON.parse(forksRaw.replace(/\]\[/g, ','));
+              const targetForks = forks.filter(f => f.fork === true);
+              
+              console.log(`Found ${targetForks.length} forks. Processing...`);
 
-          # 2. Fetch list of forks to a local file
-          USER_LOGIN=$(gh api user --jq '.login')
-          echo "Fetching forks for $USER_LOGIN..."
-          gh api "users/$USER_LOGIN/repos?per_page=100" --paginate --jq '.[] | select(.fork == true) | "\(.full_name) \(.size)"' > all_forks.txt
+              let stats = { total: 0, synced: 0, noChange: 0, blocked: 0, failed: 0 };
+              let tableRows = "| Repository | Status | Details |\n| :--- | :--- | :--- |\n";
 
-          if [ ! -s all_forks.txt ]; then
-            echo "❌ No forks found."
-            exit 1
-          fi
+              for (const fork of targetForks) {
+                stats.total++;
+                const name = fork.full_name;
+                const mySize = fork.size;
 
-          # 3. Process each fork
-          # We use a standard while-read loop to handle 1500+ lines efficiently
-          while read -r REPO_LINE; do
-            # Safely split Name and Size
-            NAME=$(echo "$REPO_LINE" | awk '{print $1}')
-            MY_SIZE=$(echo "$REPO_LINE" | awk '{print $2}')
-            ((TOTAL++))
+                try {
+                  // 1. Get Parent Info
+                  const parentRaw = execSync(`gh api "repos/${name}" --silent`).toString();
+                  const parent = JSON.parse(parentRaw).parent;
 
-            # Fetch Parent info - we use -q to remain silent on errors
-            PARENT_DATA=$(gh api "repos/$NAME" --silent --jq '{full_name: .parent.full_name, size: .parent.size}' 2>/dev/null || echo "null")
-            PARENT_NAME=$(echo "$PARENT_DATA" | jq -r '.full_name // "null"')
-            
-            if [ "$PARENT_NAME" == "null" ]; then
-              ((FAILED++))
-              continue
-            fi
+                  if (!parent) {
+                    stats.failed++;
+                    continue;
+                  }
 
-            PARENT_SIZE=$(echo "$PARENT_DATA" | jq -r '.size // 0')
-            THRESHOLD=$((MY_SIZE / 2))
+                  const parentSize = parent.size;
+                  const threshold = mySize / 2;
 
-            # 4. Sanity Check
-            if [ "$PARENT_SIZE" -lt "$THRESHOLD" ] && [ "$MY_SIZE" -gt 100 ]; then
-              echo "| $NAME | 🛑 **BLOCKED** | Parent size drop: ${PARENT_SIZE}KB |" >> table_body.md
-              ((BLOCKED++))
-            else
-              # 5. Sync Attempt (captured in a variable to prevent terminal pollution)
-              if SYNC_OUT=$(gh repo sync "$NAME" --force=false 2>&1); then
-                if echo "$SYNC_OUT" | grep -q "already up to date"; then
-                  ((NO_CHANGE++))
-                else
-                  echo "| $NAME | ✅ Synced | Successfully updated |" >> table_body.md
-                  ((SYNCED++))
-                fi
-              else
-                echo "| $NAME | ❌ Failed | Conflict or Workflow issue |" >> table_body.md
-                ((FAILED++))
-              fi
-            fi
-            
-            # Every 100 repos, print a heartbeat to logs so the job doesn't look dead
-            if (( TOTAL % 100 == 0 )); then echo "Processed $TOTAL repos..."; fi
-            
-            sleep 0.1
-          done < all_forks.txt
+                  // 2. Sanity Check
+                  if (parentSize < threshold && mySize > 100) {
+                    tableRows += `| ${name} | 🛑 **BLOCKED** | Parent size drop: ${parentSize}KB |\n`;
+                    stats.blocked++;
+                  } else {
+                    // 3. Sync Attempt
+                    try {
+                      const syncOut = execSync(`gh repo sync "${name}" --force=false`).toString();
+                      if (syncOut.includes("already up to date")) {
+                        stats.noChange++;
+                      } else {
+                        tableRows += `| ${name} | ✅ Synced | Successfully updated |\n`;
+                        stats.synced++;
+                      }
+                    } catch (syncErr) {
+                      tableRows += `| ${name} | ❌ Failed | Conflict or Permission issue |\n`;
+                      stats.failed++;
+                    }
+                  }
+                } catch (e) {
+                  stats.failed++;
+                }
 
-          # 6. Final Report Construction
-          echo "### 🔄 Sync Activity Report" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Forks:** $TOTAL" >> $GITHUB_STEP_SUMMARY
-          echo "- **Synced:** $SYNCED | **Safety Blocked:** $BLOCKED | **Conflicts:** $FAILED" >> $GITHUB_STEP_SUMMARY
-          echo "- **Already Up-to-Date:** $NO_CHANGE" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ $(wc -l < table_body.md) -gt 1 ]; then
-            cat table_body.md >> $GITHUB_STEP_SUMMARY
-          fi
+                // Heartbeat every 100 repos
+                if (stats.total % 100 === 0) console.log(`Processed ${stats.total}...`);
+                
+                // 150ms delay to respect API
+                await new Promise(r => setTimeout(r, 150));
+              }
 
-          echo "### 📊 API Quota at End" >> $GITHUB_STEP_SUMMARY
-          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY || true
+              // Build Summary
+              const summary = `### 🔄 Sync Activity Report\n` +
+                `- **Total Forks:** ${stats.total}\n` +
+                `- **Synced:** ${stats.synced} | **Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n` +
+                `- **Already Up-to-Date:** ${stats.noChange}\n\n` +
+                (stats.synced > 0 || stats.blocked > 0 || stats.failed > 0 ? tableRows : "_No changes detected._");
+
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+              console.log("Finished successfully.");
+
+            } catch (err) {
+              console.error("Critical Error:", err.message);
+              process.exit(1);
+            }
+          }
+
+          run();
+          EOF
+
+          node sync.js
