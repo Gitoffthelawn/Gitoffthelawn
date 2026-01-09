@@ -1,13 +1,18 @@
 name: "Sync forks"
 
 on:
+  # allow running the sync manually from the Actions tab whenever desired
   workflow_dispatch:
+  
+  # also automate a run at 04:17 UTC every Wednesday morning
+  schedule:
+    - cron: '17 4 * * 3' 
 
 jobs:
-  sync-all-forks:
+  sync-logic:
     runs-on: ubuntu-latest
     steps:
-      - name: "Sync All Forks via API"
+      - name: "Triage and Sync"
         uses: actions/github-script@v7
         env:
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -15,85 +20,122 @@ jobs:
           github-token: ${{ secrets.SYNC_TOKEN }}
           script: |
             const results = [];
-            const stats = { synced: 0, upToDate: 0, blocked: 0, failed: 0 };
+            const stats = { synced: 0, upToDate: 0, ahead: 0, failed: 0 };
+            const delay = ms => new Promise(res => setTimeout(res, ms));
             
-            console.log("🔍 Fetching full repository list...");
+            // 1. Initial Quota Check
+            const initialRate = await github.rest.rateLimit.get();
+            const startQuota = initialRate.data.resources.core.remaining;
+
+            // 2. Fetch all user repositories
             const allRepos = await github.paginate(github.rest.repos.listForAuthenticatedUser, {
-              affiliation: 'owner',
-              per_page: 100
+              affiliation: 'owner', per_page: 100
             });
             
             const forks = allRepos.filter(r => r.fork === true);
-            console.log(`🚀 Auditing ${forks.length} forks...`);
 
             for (const fork of forks) {
               const fOwner = fork.owner.login;
               const fRepo = fork.name;
-              let status = "Up-to-date";
-              let detail = "";
 
               try {
-                // Quota Check (Pass 7 Audit)
-                const rate = await github.rest.rateLimit.get();
-                if (rate.data.resources.core.remaining < 50) {
-                  results.push(["SYSTEM", "⚠️ HALTED", "Quota Limit"]);
-                  break;
-                }
-
-                const { data: repoData } = await github.rest.repos.get({ owner: fOwner, repo: fRepo });
+                // Fetch upstream parent metadata
+                const { data: repoDetail } = await github.rest.repos.get({ owner: fOwner, repo: fRepo });
+                if (!repoDetail || !repoDetail.parent) continue;
                 
-                if (repoData.parent) {
-                  const pSize = repoData.parent.size;
-                  const fSize = repoData.size;
+                const uOwner = repoDetail.parent.owner.login;
+                const uRepo = repoDetail.parent.name;
 
-                  // Safety Gate
-                  if (pSize < (fSize / 2) && fSize > 100) {
-                    status = "🛑 BLOCK";
-                    detail = `${pSize}KB vs ${fSize}KB`;
-                    stats.blocked++;
-                  } else {
-                    try {
+                // Fetch all branches in the fork
+                const branches = await github.paginate(github.rest.repos.listBranches, {
+                  owner: fOwner, repo: fRepo
+                });
+
+                let repoAheadList = [];
+                let repoSyncCount = 0;
+
+                for (const b of branches) {
+                  try {
+                    // PRE-CHECK: Comparison API to protect PRs and unique work
+                    const comparison = await github.rest.repos.compareCommits({
+                      owner: uOwner,
+                      repo: uRepo,
+                      base: b.name,
+                      head: `${fOwner}:${b.name}`
+                    });
+
+                    // PR PROTECTION: Only sync if strictly behind (0 commits ahead)
+                    if (comparison.data.ahead_by > 0) {
+                      repoAheadList.push(b.name);
+                    } else if (comparison.data.behind_by > 0) {
                       const res = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
                         owner: fOwner, repo: fRepo,
-                        data: { branch: repoData.default_branch }
+                        data: { branch: b.name }
                       });
-                      
-                      // LOGICAL IMPROVEMENT: Validating actual merge activity
-                      if (res.status === 200 && res.data?.merge_type && res.data.merge_type !== 'none') {
-                        status = "✅ SYNC";
-                        detail = res.data.merge_type;
-                        stats.synced++;
-                      } else {
-                        stats.upToDate++;
+                      if (res.status === 200 && res.data.merge_type === 'fast-forward') {
+                        repoSyncCount++;
+                        await delay(200); // Guard against secondary rate limits
                       }
-                    } catch (e) {
-                      if (e.status === 409) { 
-                        stats.upToDate++; 
-                      } else { throw e; }
                     }
+                  } catch (err) {
+                    // Handle branches not in upstream (marked with * for triage)
+                    if (err.status === 404 || err.status === 422) {
+                       repoAheadList.push(`${b.name}*`);
+                    } else { throw err; }
                   }
                 }
+
+                // Categorize Results with Truncation Indicators
+                if (repoAheadList.length > 0) {
+                  stats.ahead++;
+                  const total = repoAheadList.length;
+                  let note = `(${total}) `;
+                  note += total > 5 
+                    ? repoAheadList.slice(0, 5).join(', ') + " ... (+ " + (total - 5) + " more)" 
+                    : repoAheadList.join(', ');
+                  results.push([fork.full_name, "⚠️ TRIAGE", note]);
+                } else if (repoSyncCount > 0) {
+                  stats.synced++;
+                  results.push([fork.full_name, "✅ SYNCED", `${repoSyncCount} branch(es) updated`]);
+                } else {
+                  stats.upToDate++;
+                }
+
+                // Periodic Quota Check & Halt Logic (every 20 repos)
+                if (results.length % 20 === 0) {
+                  const rate = await github.rest.rateLimit.get();
+                  if (rate.data.resources.core.remaining < 250) {
+                    results.push(["SYSTEM", "🛑 HALTED", "Quota Limit Protection triggered (250 buffer)"]);
+                    break;
+                  }
+                }
+
               } catch (err) {
-                status = "❌ FAIL";
-                // ERROR AUDIT: Priority extraction of API-specific messages
-                const apiMessage = err.response?.data?.message || err.message || "Unknown";
-                detail = apiMessage.substring(0, 40);
                 stats.failed++;
-                console.log(`❌ ${fRepo}: ${apiMessage}`);
-              }
-              
-              if (status !== "Up-to-date") {
-                results.push([fork.full_name, status, detail]);
+                let apiMsg = err.response?.data?.message || err.message;
+                if (apiMsg.length > 50) apiMsg = apiMsg.substring(0, 47) + "...";
+                results.push([fork.full_name, "❌ FAIL", apiMsg]);
               }
             }
 
-            // Report Generation (Pass 10 Audit: Buffer safety)
-            const displayResults = results.slice(0, 1100);
+            // Summary Assembly with display truncation checks
+            const finalRate = await github.rest.rateLimit.get();
+            const endQuota = finalRate.data.resources.core.remaining;
+
+            let summaryContent = `**API Quota:** ${startQuota} → ${endQuota} (Used: ${startQuota - endQuota})\n`;
+            summaryContent += `<br>✅ **Syncs:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} | ⚠️ **Ahead/PR:** ${stats.ahead} | ❌ **Errors:** ${stats.failed}\n`;
+
+            const isTruncated = results.length > 1000;
+            if (isTruncated) {
+              summaryContent += `<br>⚠️ **NOTICE:** Display limit reached. Showing 1,000 of ${results.length} total processed repositories.\n`;
+            }
+
+            const tableRows = results.slice(0, 1000).map(row => 
+              `| ${row[0]} | ${row[1]} | ${row[2]} |`
+            ).join('\n');
+
             await core.summary
-              .addHeading("🔄 Sync Activity Report")
-              .addRaw(`✅ **Sync:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} | 🛑 **Block:** ${stats.blocked} | ❌ **Err:** ${stats.failed}`)
-              .addTable([
-                [{data: 'Repo', header: true}, {data: 'Stat', header: true}, {data: 'Note', header: true}],
-                ...displayResults
-              ])
+              .addHeading("🔄 Smart-Triage Sync Report")
+              .addRaw(summaryContent)
+              .addRaw("\n| Repository | Status | Notes |\n| :--- | :--- | :--- |\n" + tableRows)
               .write();
