@@ -19,61 +19,58 @@ jobs:
 
           async function run() {
             const token = process.env.MY_PAT;
-            let stats = { total: 0, synced: 0, noChange: 0, failed: 0 };
+            let stats = { total: 0, synced: 0, upToDate: 0, blocked: 0, failed: 0 };
             let tableRows = "| Repository | Status | Details |\n| :--- | :--- | :--- |\n";
+            let failureLog = "\n### ⚠️ Failure Details\n| Repository | Error Message |\n| :--- | :--- |\n";
+            let hasFailures = false;
 
             try {
-              console.log("Fetching repos via raw HTTPS request...");
-              
-              // We use a raw curl command to ensure no CLI interference
-              // This fetches up to 1000 repos in the first page (GitHub limit is usually 100 per page, so we loop)
+              // 1. Quota Check (Start)
+              const qStart = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/rate_limit`).toString()).resources.core;
+
+              console.log("Fetching all owned repositories...");
               let allRepos = [];
-              for (let page = 1; page <= 20; page++) {
+              for (let page = 1; page <= 25; page++) {
                 const cmd = `curl -s -H "Authorization: token ${token}" "https://api.github.com/user/repos?per_page=100&page=${page}&affiliation=owner"`;
-                const output = execSync(cmd).toString();
-                const part = JSON.parse(output);
-                if (part.length === 0) break;
+                const part = JSON.parse(execSync(cmd).toString());
+                if (!Array.isArray(part) || part.length === 0) break;
                 allRepos = allRepos.concat(part);
-                console.log(`Page ${page}: found ${part.length} repos...`);
               }
 
               const targetForks = allRepos.filter(f => f.fork === true);
-              console.log(`Total Forks Found: ${targetForks.length}`);
-
-              if (targetForks.length === 0) {
-                const diag = `### 🔄 Sync Activity Report\n- **Total Repos Found:** ${allRepos.length}\n- **Total Forks Found:** 0\n\n**Sample:** \`${allRepos.slice(0,2).map(r => r.full_name).join(', ')}\``;
-                fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, diag);
-                return;
-              }
+              console.log(`Found ${targetForks.length} forks. Analyzing and Syncing...`);
 
               for (const fork of targetForks) {
                 stats.total++;
                 const name = fork.full_name;
+                
                 try {
-                  // Attempt sync using the token explicitly
+                  // 2. THE SAFETY CODE (Protect against obliterated upstreams)
+                  const repoData = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/repos/${name}`).toString());
+                  const parent = repoData.parent;
+
+                  if (parent) {
+                    const mySize = fork.size;
+                    const parentSize = parent.size;
+                    
+                    // Safety logic: If parent is < 50% of fork size, it's likely been wiped
+                    if (parentSize < (mySize / 2) && mySize > 100) {
+                      tableRows += `| ${name} | 🛑 **BLOCKED** | Safety: Parent size (${parentSize}KB) < 50% of fork (${mySize}KB) |\n`;
+                      stats.blocked++;
+                      continue; 
+                    }
+                  } else {
+                    failureLog += `| ${name} | Upstream parent no longer exists or is private |\n`;
+                    stats.failed++;
+                    hasFailures = true;
+                    continue;
+                  }
+
+                  // 3. Sync Attempt
                   const syncCmd = `curl -s -X POST -H "Authorization: token ${token}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/${name}/merge-upstream -d '{"branch":"${fork.default_branch}"}'`;
                   const result = JSON.parse(execSync(syncCmd).toString());
                   
                   if (result.message && result.message.includes("Successfully merged")) {
-                    tableRows += `| ${name} | ✅ | Synced |\n`;
+                    tableRows += `| ${name} | ✅ Synced | New changes merged |\n`;
                     stats.synced++;
-                  } else {
-                    stats.noChange++;
-                  }
-                } catch (e) {
-                  stats.failed++;
-                }
-                if (stats.total % 100 === 0) console.log(`Processed ${stats.total}...`);
-              }
-
-              const summary = `### 🔄 Sync Activity Report\n- **Total Forks:** ${stats.total}\n- **Synced:** ${stats.synced}\n\n${tableRows}`;
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
-
-            } catch (err) {
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ❌ Error\n${err.message}`);
-              process.exit(1);
-            }
-          }
-          run();
-          EOF
-          node sync.js
+                  } else if (result.
