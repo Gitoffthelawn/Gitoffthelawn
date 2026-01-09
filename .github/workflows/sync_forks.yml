@@ -9,7 +9,7 @@ jobs:
   sync-forks:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync All Forks (Node.js Version)
+      - name: Sync All Forks
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
@@ -18,21 +18,28 @@ jobs:
           const fs = require('fs');
 
           async function run() {
+            let stats = { total: 0, synced: 0, noChange: 0, blocked: 0, failed: 0 };
+            let tableRows = "| Repository | Status | Details |\n| :--- | :--- | :--- |\n";
+            let failureLog = "### ⚠️ Failure Details\n| Repository | Error Message |\n| :--- | :--- |\n";
+            let hasFailures = false;
+            let hasTableEntries = false;
+
             try {
-              console.log("Fetching list of forks...");
-              // Get user login
+              console.log("Fetching list of forks to disk (bypassing buffer limits)...");
               const user = JSON.parse(execSync('gh api user').toString()).login;
-              // Get all forks (handles pagination automatically via --paginate)
-              const forksRaw = execSync(`gh api "users/${user}/repos?per_page=100" --paginate`).toString();
               
-              // Handle potential concatenated JSON arrays from --paginate
-              const forks = JSON.parse(forksRaw.replace(/\]\[/g, ','));
+              // Direct shell redirection to file handles any number of repos
+              execSync(`gh api "users/${user}/repos?per_page=100" --paginate > forks_raw.json`);
+              
+              const rawData = fs.readFileSync('forks_raw.json', 'utf8').trim();
+              if (!rawData) throw new Error("API returned no data.");
+
+              // Handle paginated JSON arrays (stitches ][ into ,)
+              const sanitized = "[" + rawData.replace(/\]\s*\[/g, ',') + "]";
+              const forks = JSON.parse(sanitized);
               const targetForks = forks.filter(f => f.fork === true);
               
               console.log(`Found ${targetForks.length} forks. Processing...`);
-
-              let stats = { total: 0, synced: 0, noChange: 0, blocked: 0, failed: 0 };
-              let tableRows = "| Repository | Status | Details |\n| :--- | :--- | :--- |\n";
 
               for (const fork of targetForks) {
                 stats.total++;
@@ -41,11 +48,13 @@ jobs:
 
                 try {
                   // 1. Get Parent Info
-                  const parentRaw = execSync(`gh api "repos/${name}" --silent`).toString();
-                  const parent = JSON.parse(parentRaw).parent;
+                  const parentData = JSON.parse(execSync(`gh api "repos/${name}" --silent`).toString());
+                  const parent = parentData.parent;
 
                   if (!parent) {
+                    failureLog += `| ${name} | Upstream parent no longer exists or is private |\n`;
                     stats.failed++;
+                    hasFailures = true;
                     continue;
                   }
 
@@ -54,51 +63,64 @@ jobs:
 
                   // 2. Sanity Check
                   if (parentSize < threshold && mySize > 100) {
-                    tableRows += `| ${name} | 🛑 **BLOCKED** | Parent size drop: ${parentSize}KB |\n`;
+                    tableRows += `| ${name} | 🛑 **BLOCKED** | Parent size (${parentSize}KB) < 50% of fork (${mySize}KB) |\n`;
                     stats.blocked++;
+                    hasTableEntries = true;
                   } else {
                     // 3. Sync Attempt
                     try {
-                      const syncOut = execSync(`gh repo sync "${name}" --force=false`).toString();
+                      const syncOut = execSync(`gh repo sync "${name}" --force=false 2>&1`).toString();
                       if (syncOut.includes("already up to date")) {
                         stats.noChange++;
                       } else {
                         tableRows += `| ${name} | ✅ Synced | Successfully updated |\n`;
                         stats.synced++;
+                        hasTableEntries = true;
                       }
                     } catch (syncErr) {
-                      tableRows += `| ${name} | ❌ Failed | Conflict or Permission issue |\n`;
+                      const errMsg = syncErr.stdout ? syncErr.stdout.toString().split('\n')[0] : "Merge conflict or scope issue";
+                      tableRows += `| ${name} | ❌ Failed | See failure log below |\n`;
+                      failureLog += `| ${name} | ${errMsg.replace(/\|/g, '-')} |\n`;
                       stats.failed++;
+                      hasFailures = true;
+                      hasTableEntries = true;
                     }
                   }
                 } catch (e) {
+                  failureLog += `| ${name} | API error: ${e.message} |\n`;
                   stats.failed++;
+                  hasFailures = true;
                 }
 
-                // Heartbeat every 100 repos
                 if (stats.total % 100 === 0) console.log(`Processed ${stats.total}...`);
-                
-                // 150ms delay to respect API
-                await new Promise(r => setTimeout(r, 150));
+                await new Promise(r => setTimeout(r, 100)); // Respect API limits
               }
 
-              // Build Summary
-              const summary = `### 🔄 Sync Activity Report\n` +
+              // Build Final Summary
+              let finalSummary = `### 🔄 Sync Activity Report\n` +
                 `- **Total Forks:** ${stats.total}\n` +
-                `- **Synced:** ${stats.synced} | **Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n` +
-                `- **Already Up-to-Date:** ${stats.noChange}\n\n` +
-                (stats.synced > 0 || stats.blocked > 0 || stats.failed > 0 ? tableRows : "_No changes detected._");
+                `- **Synced:** ${stats.synced} | **Safety Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n` +
+                `- **Already Up-to-Date:** ${stats.noChange}\n\n`;
 
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
-              console.log("Finished successfully.");
+              if (hasTableEntries) {
+                finalSummary += tableRows + "\n\n";
+              } else {
+                finalSummary += "_All repositories are currently synchronized or skipped._\n\n";
+              }
+
+              if (hasFailures) {
+                finalSummary += failureLog;
+              }
+
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, finalSummary);
+              console.log("Sync process completed successfully.");
 
             } catch (err) {
-              console.error("Critical Error:", err.message);
+              console.error("Fatal Error:", err.message);
               process.exit(1);
             }
           }
-
           run();
           EOF
-
+          
           node sync.js
