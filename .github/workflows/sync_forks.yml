@@ -13,45 +13,63 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
+          # 1. Check Initial Quota
+          echo "### 📊 API Quota at Start" >> $GITHUB_STEP_SUMMARY
+          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit) (Resets at: \( .resources.core.reset | strftime("%Y-%m-%d %H:%M:%S") ))"' >> $GITHUB_STEP_SUMMARY
+
           # Initialize temporary storage
           echo "| Repository | Status | Details |" > table_body.md
           echo "| :--- | :--- | :--- |" >> table_body.md
+          
+          # Initialize Counters in a file to persist through loops
           echo "TOTAL=0; SYNCED=0; NO_CHANGE=0; BLOCKED=0; FAILED=0" > counts.tmp
 
-          # 1. Fetch ALL forks with a retry loop for the initial call
-          # We use a simple while loop to handle pagination manually to be safer against 502s
           cursor="null"
           has_next_page=true
 
+          # 2. Loop through all pages of forks
           while [ "$has_next_page" = true ]; do
             echo "Fetching page of forks (cursor: $cursor)..."
             
-            # Use 'gh api' with a retry flag and a timeout
-            page_data=$(gh api graphql --retry 3 -f cursor="$cursor" -f query='
-              query($cursor: String) {
-                viewer {
-                  repositories(first: 50, isFork: true, after: $cursor) {
-                    nodes {
-                      nameWithOwner
-                      diskUsage
-                      defaultBranchRef { name }
-                      parent {
+            attempt=1
+            page_data=""
+            # Robust Retry Logic for 502/504 errors
+            until [ $attempt -gt 3 ]; do
+              page_data=$(gh api graphql -f cursor="$cursor" -f query='
+                query($cursor: String) {
+                  viewer {
+                    repositories(first: 50, isFork: true, after: $cursor) {
+                      nodes {
                         nameWithOwner
                         diskUsage
+                        defaultBranchRef { name }
+                        parent {
+                          nameWithOwner
+                          diskUsage
+                        }
                       }
-                    }
-                    pageInfo {
-                      hasNextPage
-                      endCursor
+                      pageInfo {
+                        hasNextPage
+                        endCursor
+                      }
                     }
                   }
                 }
-              }
-            ') || { echo "GitHub API failed after retries. Exiting."; exit 1; }
+              ' 2>/dev/null) && break
+              
+              echo "Attempt $attempt failed. Retrying in $((attempt * 10))s..."
+              sleep $((attempt * 10))
+              ((attempt++))
+            done
 
-            # 2. Process the current page
-            echo "$page_data" | jq -c '.data.viewer.repositories.nodes[]' | while read -r repo; do
-              # Load counters
+            if [ -z "$page_data" ]; then
+              echo "Error: GitHub API failed 3 times. This usually means a major GitHub outage."
+              exit 1
+            fi
+
+            # 3. Process the current page
+            # We use a process substitution to keep variables inside the main shell
+            while read -r repo; do
               source counts.tmp
               ((TOTAL++))
               
@@ -64,15 +82,17 @@ jobs:
                 echo "| $NAME | ⚠️ Skipped | Parent repo no longer exists |" >> table_body.md
                 ((FAILED++))
               else
-                # Sanity Check: Mass deletion
+                # Sanity Check: Mass deletion (Skip if fork is < 100KB to avoid noise)
                 THRESHOLD=$((MY_SIZE / 2))
                 if [ "$PARENT_SIZE" -lt "$THRESHOLD" ] && [ "$MY_SIZE" -gt 100 ]; then
                   echo "| $NAME | 🛑 **BLOCKED** | Size Trigger: Parent ${PARENT_SIZE}KB vs Fork ${MY_SIZE}KB |" >> table_body.md
                   ((BLOCKED++))
                 else
-                  # Sync Attempt
+                  # Sync Attempt - Non-destructive
                   SYNC_OUTPUT=$(gh repo sync "$NAME" --force=false 2>&1)
-                  if [ $? -eq 0 ]; then
+                  SYNC_EXIT=$?
+                  
+                  if [ $SYNC_EXIT -eq 0 ]; then
                     if echo "$SYNC_OUTPUT" | grep -q "already up to date"; then
                       echo "| $NAME | ✨ No Change | Fork is newer or equal to parent |" >> table_body.md
                       ((NO_CHANGE++))
@@ -86,22 +106,24 @@ jobs:
                   fi
                 fi
               fi
-              # Save counters
+              # Save counters back to file
               echo "TOTAL=$TOTAL; SYNCED=$SYNCED; NO_CHANGE=$NO_CHANGE; BLOCKED=$BLOCKED; FAILED=$FAILED" > counts.tmp
-            done
+            done < <(echo "$page_data" | jq -c '.data.viewer.repositories.nodes[]')
 
-            # Update pagination variables
             has_next_page=$(echo "$page_data" | jq -r '.data.viewer.repositories.pageInfo.hasNextPage')
             cursor=$(echo "$page_data" | jq -r '.data.viewer.repositories.pageInfo.endCursor')
           done
 
-          # 3. Build Final Summary
+          # 4. Final Report
           source counts.tmp
-          echo "### 📊 Sync Activity Report" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Forks Processed:** $TOTAL" >> $GITHUB_STEP_SUMMARY
-          echo "- **Successfully Synced:** $SYNCED" >> $GITHUB_STEP_SUMMARY
-          echo "- **Already Up-to-Date/Newer:** $NO_CHANGE" >> $GITHUB_STEP_SUMMARY
-          echo "- **Blocked by Sanity Check:** $BLOCKED" >> $GITHUB_STEP_SUMMARY
-          echo "- **Failed/Conflicts:** $FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔄 Sync Activity Report" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Forks:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Updated:** $SYNCED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Up-to-Date:** $NO_CHANGE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Safety Blocked:** $BLOCKED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Conflicts/Errors:** $FAILED" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           cat table_body.md >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📊 API Quota at End" >> $GITHUB_STEP_SUMMARY
+          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY
