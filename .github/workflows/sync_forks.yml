@@ -20,29 +20,35 @@ jobs:
           async function run() {
             let stats = { total: 0, synced: 0, noChange: 0, blocked: 0, failed: 0 };
             let tableRows = "| Repository | Status | Details |\n| :--- | :--- | :--- |\n";
-            let failureLog = "### ⚠️ Failure Details\n| Repository | Error Message |\n| :--- | :--- |\n";
+            let failureLog = "\n### ⚠️ Failure Details\n| Repository | Error Message |\n| :--- | :--- |\n";
             let hasFailures = false;
             let hasTableEntries = false;
 
             try {
-              console.log("Fetching deep list of forks (all visibility)...");
+              console.log("Fetching repositories using authenticated user endpoint...");
               
-              // Using /user/repos with type=owner ensures we see all 1500+ repositories you actually own
-              execSync(`gh api "user/repos?per_page=100&type=owner" --paginate > forks_raw.json`);
+              // We use /user/repos which is the most powerful endpoint for the token owner
+              execSync(`gh api "user/repos?per_page=100&affiliation=owner" --paginate > forks_raw.json`);
               
               const rawData = fs.readFileSync('forks_raw.json', 'utf8').trim();
-              if (!rawData) throw new Error("API returned no data.");
+              if (!rawData || rawData === "[]") {
+                throw new Error("API returned an empty list. This usually means the PAT lacks 'repo' scope or is pointed at the wrong account.");
+              }
 
-              // Fix paginated JSON stitching
               const sanitized = "[" + rawData.replace(/\]\s*\[/g, ',') + "]";
               const allRepos = JSON.parse(sanitized);
               
-              // Filter for forks
+              console.log(`Total Repositories Found: ${allRepos.length}`);
+              
               const targetForks = allRepos.filter(f => f.fork === true);
-              console.log(`Found ${targetForks.length} total forks.`);
+              console.log(`Total Forks Found: ${targetForks.length}`);
 
               if (targetForks.length === 0) {
-                console.log("Verified: No forks found in the repository list.");
+                // DIAGNOSTIC: List first 3 repos found to see what we ARE seeing
+                const sample = allRepos.slice(0, 3).map(r => r.full_name).join(", ");
+                const diag = `### 🔄 Sync Activity Report\n- **Total Forks Found:** 0\n\n**Diagnostic:** API found ${allRepos.length} repos, but 0 forks. Sample repos seen: \`${sample}\`. If these aren't yours, the PAT is the issue.`;
+                fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, diag);
+                return;
               }
 
               for (const fork of targetForks) {
@@ -55,15 +61,14 @@ jobs:
                   const parent = parentData.parent;
 
                   if (!parent) {
-                    failureLog += `| ${name} | Parent data inaccessible |\n`;
+                    failureLog += `| ${name} | Parent inaccessible |\n`;
                     stats.failed++;
                     hasFailures = true;
                     continue;
                   }
 
-                  const parentSize = parent.size;
-                  if (parentSize < (mySize / 2) && mySize > 100) {
-                    tableRows += `| ${name} | 🛑 **BLOCKED** | Parent size (${parentSize}KB) < 50% of fork |\n`;
+                  if (parent.size < (mySize / 2) && mySize > 100) {
+                    tableRows += `| ${name} | 🛑 **BLOCKED** | Parent size (${parent.size}KB) < 50% of fork |\n`;
                     stats.blocked++;
                     hasTableEntries = true;
                   } else {
@@ -82,6 +87,7 @@ jobs:
                       failureLog += `| ${name} | ${errMsg.replace(/\|/g, '-')} |\n`;
                       stats.failed++;
                       hasFailures = true;
+                      hasTableEntries = true;
                     }
                   }
                 } catch (e) {
@@ -89,21 +95,20 @@ jobs:
                 }
 
                 if (stats.total % 100 === 0) console.log(`Processed ${stats.total}...`);
-                await new Promise(r => setTimeout(r, 150));
+                await new Promise(r => setTimeout(r, 100));
               }
 
-              let finalSummary = `### 🔄 Sync Activity Report\n` +
-                `- **Total Forks Found:** ${stats.total}\n` +
-                `- **Synced:** ${stats.synced} | **Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n\n`;
+              let summary = `### 🔄 Sync Activity Report\n` +
+                `- **Total Forks Processed:** ${stats.total}\n` +
+                `- **Synced:** ${stats.synced} | **Safety Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n\n`;
 
-              if (hasTableEntries) finalSummary += tableRows + "\n\n";
-              if (hasFailures) finalSummary += failureLog;
+              if (hasTableEntries) summary += tableRows;
+              if (hasFailures) summary += failureLog;
 
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, finalSummary);
-              console.log("Done.");
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
 
             } catch (err) {
-              console.error("Fatal Error:", err.message);
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ❌ Error\n${err.message}`);
               process.exit(1);
             }
           }
