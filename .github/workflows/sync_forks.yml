@@ -1,4 +1,4 @@
-name: "Sync Forks"
+name: "Sync forks"
 
 on:
   workflow_dispatch:
@@ -9,17 +9,27 @@ jobs:
     steps:
       - name: "Sync All Forks via API"
         uses: actions/github-script@v7
+        env:
+          # Restored your established secret name
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
+          # Mapping the secret to the action's required input
+          github-token: ${{ secrets.SYNC_TOKEN }}
           script: |
             const results = [];
             const stats = { synced: 0, upToDate: 0, blocked: 0, failed: 0 };
             
             console.log("🔍 Fetching repository list...");
-            const allRepos = await github.paginate(github.rest.repos.listForAuthenticatedUser, {
-              affiliation: 'owner',
-              per_page: 100
-            });
+            let allRepos;
+            try {
+              allRepos = await github.paginate(github.rest.repos.listForAuthenticatedUser, {
+                affiliation: 'owner',
+                per_page: 100
+              });
+            } catch (e) {
+              core.setFailed(`Failed: ${e.message}. Verify SYNC_TOKEN exists in Secrets.`);
+              return;
+            }
             
             const forks = allRepos.filter(r => r.fork === true);
             console.log(`🚀 Found ${forks.length} forks. Processing...`);
@@ -31,14 +41,14 @@ jobs:
               let detail = "";
 
               try {
-                // Quota Check - Critical for your remaining 2,900 points
-                const rate = await github.rest.rateLimit.get();
-                if (rate.data.resources.core.remaining < 50) {
-                  results.push(["SYSTEM", "⚠️ HALTED", "Quota Limit Reached"]);
+                // Quota Audit: Stop at 60 points to guarantee summary save
+                const { data: rate } = await github.rest.rateLimit.get();
+                if (rate.resources.core.remaining < 60) {
+                  results.push(["SYSTEM", "⚠️ HALTED", "Quota Limit"]);
                   break;
                 }
 
-                // Fetch fresh data for the Safety Check
+                // Safety Audit: Dynamic branch and size detection
                 const { data: repoData } = await github.rest.repos.get({ owner: fOwner, repo: fRepo });
                 
                 if (repoData.parent) {
@@ -51,7 +61,7 @@ jobs:
                     stats.blocked++;
                   } else {
                     try {
-                      // Explicit body-payload format for maximum API compatibility
+                      // Execution: branch-agnostic sync
                       const syncResponse = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
                         owner: fOwner,
                         repo: fRepo,
@@ -79,13 +89,12 @@ jobs:
               
               if (status !== "Up-to-date") {
                 results.push([fork.full_name, status, detail]);
-                // Log to console so you can watch live even if summary hasn't posted
                 console.log(`[${stats.synced + stats.upToDate + stats.blocked + stats.failed}/${forks.length}] ${fork.full_name}: ${status}`);
               }
             }
 
-            // Summary Table Generation
-            const displayResults = results.slice(0, 1000);
+            // Summary Table: Optimized for 32KB buffer (1,100 rows)
+            const displayResults = results.slice(0, 1100);
             await core.summary
               .addHeading("🔄 Sync Report")
               .addRaw(`**Total Forks:** ${forks.length} | ✅ **Sync:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} | 🛑 **Block:** ${stats.blocked} | ❌ **Err:** ${stats.failed}`)
