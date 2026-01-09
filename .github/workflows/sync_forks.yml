@@ -1,99 +1,96 @@
-name: Safe Sync Forks
+name: "Master Fork Sync Final"
 
 on:
-  schedule:
-    - cron: '17 4 * * *' # Random time of 04_17 UTC to avoid peak traffic delays at 00_00 UTC
   workflow_dispatch:
 
 jobs:
-  sync-forks:
+  sync-all-forks:
     runs-on: ubuntu-latest
-    timeout-minutes: 60 # Long enough for 1400 repos, but prevents infinite hangs
     steps:
-      - name: Sync All Forks
-        env:
-          MY_PAT: ${{ secrets.SYNC_TOKEN }}
-        run: |
-          cat << 'EOF' > sync.js
-          const { execSync } = require('child_process');
-          const fs = require('fs');
+      - name: "Sync All Forks via API"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}
+          script: |
+            const results = [];
+            const stats = { synced: 0, upToDate: 0, blocked: 0, failed: 0 };
+            
+            console.log("🔍 Fetching repository list...");
+            const allRepos = await github.paginate(github.rest.repos.listForAuthenticatedUser, {
+              affiliation: 'owner',
+              per_page: 100
+            });
+            
+            const forks = allRepos.filter(r => r.fork === true);
+            console.log(`🚀 Found ${forks.length} forks. Processing...`);
 
-          async function run() {
-            const token = process.env.MY_PAT;
-            let stats = { total: 0, synced: 0, upToDate: 0, blocked: 0, failed: 0, consecutiveFailures: 0 };
-            let tableRows = "| Repository | Status | Details |\n| :--- | :--- | :--- |\n";
-            let hasFailures = false;
+            for (const fork of forks) {
+              const fOwner = fork.owner.login;
+              const fRepo = fork.name;
+              let status = "Up-to-date";
+              let detail = "";
 
-            try {
-              const qStart = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/rate_limit`).toString()).resources.core;
-              
-              let allRepos = [];
-              for (let page = 1; page <= 30; page++) {
-                const cmd = `curl -s -H "Authorization: token ${token}" "https://api.github.com/user/repos?per_page=100&page=${page}&affiliation=owner"`;
-                const part = JSON.parse(execSync(cmd).toString());
-                if (!Array.isArray(part) || part.length === 0) break;
-                allRepos = allRepos.concat(part);
-              }
-
-              const targetForks = allRepos.filter(f => f.fork === true);
-              const totalToProcess = targetForks.length;
-              console.log(`Starting sync for ${totalToProcess} forks...`);
-
-              for (let i = 0; i < totalToProcess; i++) {
-                // Safety: Stop if we hit too many errors in a row
-                if (stats.consecutiveFailures >= 10) {
-                  console.error("Stopping: Hit 10 consecutive failures. Check token/network.");
+              try {
+                // Quota Check - Critical for your remaining 2,900 points
+                const rate = await github.rest.rateLimit.get();
+                if (rate.data.resources.core.remaining < 50) {
+                  results.push(["SYSTEM", "⚠️ HALTED", "Quota Limit Reached"]);
                   break;
                 }
 
-                const fork = targetForks[i];
-                stats.total++;
-                const name = fork.full_name;
+                // Fetch fresh data for the Safety Check
+                const { data: repoData } = await github.rest.repos.get({ owner: fOwner, repo: fRepo });
                 
-                try {
-                  // 1. Safety Code (Size Check)
-                  const repoData = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/repos/${name}`).toString());
-                  if (repoData.parent && repoData.parent.size < (fork.size / 2) && fork.size > 100) {
+                if (repoData.parent) {
+                  const pSize = repoData.parent.size;
+                  const fSize = repoData.size;
+
+                  if (pSize < (fSize / 2) && fSize > 100) {
+                    status = "🛑 BLOCK";
+                    detail = `Upstream (${pSize}KB) < 50%`;
                     stats.blocked++;
-                    stats.consecutiveFailures = 0;
-                    continue;
-                  }
-
-                  // 2. Sync Attempt
-                  const syncCmd = `curl -s -X POST -H "Authorization: token ${token}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/${name}/merge-upstream -d '{"branch":"${fork.default_branch}"}'`;
-                  const result = JSON.parse(execSync(syncCmd).toString());
-                  
-                  if (result.message && result.message.includes("Successfully merged")) {
-                    tableRows += `| ${name} | ✅ Synced | Updated |\n`;
-                    stats.synced++;
-                    stats.consecutiveFailures = 0;
                   } else {
-                    stats.upToDate++;
-                    stats.consecutiveFailures = 0;
+                    try {
+                      // Explicit body-payload format for maximum API compatibility
+                      const syncResponse = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
+                        owner: fOwner,
+                        repo: fRepo,
+                        data: {
+                          branch: repoData.default_branch
+                        }
+                      });
+                      
+                      if (syncResponse.status === 200 || syncResponse.status === 204) {
+                        status = "✅ SYNC";
+                        stats.synced++;
+                      }
+                    } catch (e) {
+                      if (e.status === 409) {
+                        stats.upToDate++;
+                      } else { throw e; }
+                    }
                   }
-                } catch (e) {
-                  stats.failed++;
-                  stats.consecutiveFailures++;
-                }
-                
-                if (stats.total % 50 === 0) {
-                  const percent = Math.round((stats.total / totalToProcess) * 100);
-                  console.log(`Progress: ${percent}% (${stats.total}/${totalToProcess})`);
-                }
-                await new Promise(r => setTimeout(r, 60)); 
+                } else { stats.upToDate++; }
+              } catch (err) {
+                status = "❌ FAIL";
+                detail = err.message.substring(0, 35);
+                stats.failed++;
               }
-
-              const qEnd = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/rate_limit`).toString()).resources.core;
-              let summary = `### 📊 API Quota\n- **Used:** ${qStart.remaining - qEnd.remaining} points\n- **Remaining:** ${qEnd.remaining}\n\n`;
-              summary += `### 🔄 Sync Activity Report\n- **Total Forks:** ${stats.total}\n- **Synced:** ${stats.synced} | **Up-to-Date:** ${stats.upToDate} | **Blocked:** ${stats.blocked} | **Failed:** ${stats.failed}\n\n`;
               
-              if (stats.synced > 0 || stats.blocked > 0) summary += "#### ✅ Notable Changes\n" + tableRows;
-              
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
-            } catch (err) {
-              process.exit(1);
+              if (status !== "Up-to-date") {
+                results.push([fork.full_name, status, detail]);
+                // Log to console so you can watch live even if summary hasn't posted
+                console.log(`[${stats.synced + stats.upToDate + stats.blocked + stats.failed}/${forks.length}] ${fork.full_name}: ${status}`);
+              }
             }
-          }
-          run();
-          EOF
-          node sync.js
+
+            // Summary Table Generation
+            const displayResults = results.slice(0, 1000);
+            await core.summary
+              .addHeading("🔄 Sync Report")
+              .addRaw(`**Total Forks:** ${forks.length} | ✅ **Sync:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} | 🛑 **Block:** ${stats.blocked} | ❌ **Err:** ${stats.failed}`)
+              .addTable([
+                [{data: 'Repo', header: true}, {data: 'Stat', header: true}, {data: 'Note', header: true}],
+                ...displayResults
+              ])
+              .write();
