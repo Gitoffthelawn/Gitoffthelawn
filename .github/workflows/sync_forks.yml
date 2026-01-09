@@ -1,10 +1,10 @@
 name: "Sync forks"
 
 on:
-  # Manual maintenance trigger
+  # Allows manual triggers from the "Actions" tab
   workflow_dispatch:
   
-  # Automated run: 04:17 UTC every Wednesday morning
+  # Automates the run at 04:17 UTC every Wednesday morning
   schedule:
     - cron: '17 4 * * 3' 
 
@@ -12,7 +12,7 @@ jobs:
   sync-logic:
     runs-on: ubuntu-latest
     steps:
-      - name: "Triage and Sync"
+      - name: "Triage and Sync All Branches"
         uses: actions/github-script@v7
         env:
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -23,52 +23,72 @@ jobs:
             const stats = { synced: 0, upToDate: 0, ahead: 0, failed: 0 };
             const delay = ms => new Promise(res => setTimeout(res, ms));
             
-            // 1. Quota Initialization
+            // 1. Initialize API Quota Tracking
             const initialRate = await github.rest.rateLimit.get();
             const startQuota = initialRate.data.resources.core.remaining;
 
-            // 2. Initial List Generation
+            // 2. Fetch all user repositories (Paginated to handle 1,428 items)
             const forks = await github.paginate(github.rest.repos.listForAuthenticatedUser, {
               affiliation: 'owner', per_page: 100
             }).then(repos => repos.filter(r => r.fork));
 
-            console.log(`🚀 Starting 1,000-Pass Audited Sync of ${forks.length} forks.`);
+            console.log(`🚀 Starting 1000-Pass Audited Sync of ${forks.length} forks.`);
             console.log(`📊 Initial Quota: ${startQuota}`);
 
             for (const [index, fork] of forks.entries()) {
               const currentPos = index + 1;
               
-              // Progress Logging (Every 10 repos for live heartbeat)
+              // Progress Logging (Every 10 repos for a live heartbeat)
               if (currentPos % 10 === 0 || currentPos === forks.length) {
-                console.log(`[${currentPos}/${forks.length}] Audit In-Progress: ${fork.full_name}`);
+                console.log(`[${currentPos}/${forks.length}] Auditing: ${fork.full_name}`);
               }
 
               try {
+                // Fetch full metadata to find the Upstream Parent
                 const { data: repoDetail } = await github.rest.repos.get({ owner: fork.owner.login, repo: fork.name });
-                if (!repoDetail || !repoDetail.parent) continue;
-
-                // 3. REPO-LEVEL GATEKEEPER (The Quota Saver)
-                const comp = await github.rest.repos.compareCommits({
-                  owner: repoDetail.parent.owner.login,
-                  repo: repoDetail.parent.name,
-                  base: fork.default_branch,
-                  head: `${fork.owner.login}:${fork.default_branch}`
-                });
-
-                // CASE: DIVERGED - Custom work/PR detected on root
-                if (comp.data.ahead_by > 0) {
-                  stats.ahead++;
-                  results.push([fork.full_name, "⚠️ TRIAGE", `Root branch '${fork.default_branch}' ahead by ${comp.data.ahead_by}.`]);
+                
+                // --- CASE: ORPHAN (No Parent) ---
+                if (!repoDetail.parent || !repoDetail.parent.owner) {
+                  results.push([fork.full_name, "⚠️ ORPHAN", "No upstream parent found."]);
+                  stats.ahead++; // Categorized here to avoid counting as a 'FAIL'
                   continue;
                 }
 
-                // CASE: UP TO DATE - No work needed
+                const uOwner = repoDetail.parent.owner.login;
+                const uRepo = repoDetail.parent.name;
+
+                // 3. GATEKEEPER CHECK: Compare default branch (Quota Saver)
+                let comp;
+                try {
+                  comp = await github.rest.repos.compareCommits({
+                    owner: uOwner, repo: uRepo,
+                    base: fork.default_branch,
+                    head: `${fork.owner.login}:${fork.default_branch}`
+                  });
+                } catch (e) {
+                  if (e.status === 404) {
+                    // This handles the "Not Found" error caused by token visibility/org blocks
+                    results.push([fork.full_name, "❌ FAIL", `Upstream @${uOwner} hidden. Check token permissions.`]);
+                    stats.failed++;
+                    continue;
+                  }
+                  throw e;
+                }
+
+                // --- CASE: DIVERGED ---
+                if (comp.data.ahead_by > 0) {
+                  stats.ahead++;
+                  results.push([fork.full_name, "⚠️ TRIAGE", `Root branch ahead by ${comp.data.ahead_by}.`]);
+                  continue;
+                }
+
+                // --- CASE: UP TO DATE ---
                 if (comp.data.behind_by === 0) {
                   stats.upToDate++;
                   continue; 
                 }
 
-                // CASE: BEHIND - Deep sync all branches
+                // --- CASE: BEHIND (Proceed with Deep Sync of All Branches) ---
                 const branches = await github.paginate(github.rest.repos.listBranches, {
                   owner: fork.owner.login, repo: fork.name
                 });
@@ -78,6 +98,7 @@ jobs:
 
                 for (const b of branches) {
                   try {
+                    // POST call to the merge-upstream endpoint (Same as clicking "Sync fork" button)
                     const res = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
                       owner: fork.owner.login, repo: fork.name,
                       data: { branch: b.name }
@@ -85,15 +106,18 @@ jobs:
 
                     if (res.status === 200 && res.data.merge_type === 'fast-forward') {
                       branchSyncs++;
-                      await delay(150); // Mandatory pause for secondary rate limit health
+                      await delay(150); // Pause to prevent secondary rate limits
                     }
                   } catch (e) {
+                    // 409 means the branch has diverged (Sync button would be disabled in UI)
                     if (e.status === 409) branchConflicts++;
                   }
                 }
                 
                 stats.synced++;
-                let note = `Updated ${branchSyncs} branch(es).`;
+                // Applied Smart Pluralization logic
+                const branchWord = branchSyncs === 1 ? "branch" : "branches";
+                let note = `Updated ${branchSyncs} ${branchWord}.`;
                 if (branchConflicts > 0) note += ` (${branchConflicts} skipped - custom commits)`;
                 results.push([fork.full_name, "✅ SYNCED", note]);
 
@@ -101,7 +125,7 @@ jobs:
                 if (currentPos % 25 === 0) {
                   const rate = await github.rest.rateLimit.get();
                   if (rate.data.resources.core.remaining < 500) {
-                    console.log("🛑 SAFETY HALT: Quota near exhaustion.");
+                    console.log("🛑 SAFETY HALT: Quota buffer reached.");
                     results.push(["SYSTEM", "🛑 HALTED", `Quota reached 500 buffer. Remaining: ${rate.data.resources.core.remaining}`]);
                     break;
                   }
@@ -109,22 +133,21 @@ jobs:
 
               } catch (err) {
                 stats.failed++;
-                let msg = err.message || "Network/API Error";
+                let msg = err.message || "Network Error";
                 if (msg.length > 50) msg = msg.substring(0, 47) + "...";
                 results.push([fork.full_name, "❌ FAIL", msg]);
               }
             }
 
-            // 5. SUMMARY WITH TRUNCATION INDICATORS
+            // 5. FINAL SUMMARY GENERATION
             const finalRate = await github.rest.rateLimit.get();
-            const endQuota = finalRate.data.resources.core.remaining;
             const totalProcessed = stats.synced + stats.upToDate + stats.ahead + stats.failed;
 
-            let summary = core.summary.addHeading("🔄 1,000-Pass Fully Audited Sync Report");
-            
-            summary.addRaw(`**API Quota Monitoring:** ${startQuota} (Start) → ${endQuota} (End) | **Used:** ${startQuota - endQuota}\n`);
-            summary.addRaw(`<br>✅ **Syncs:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} | ⚠️ **Ahead:** ${stats.ahead} | ❌ **Errors:** ${stats.failed}\n`);
+            let summary = core.summary.addHeading("🔄 1000-Pass Fully Audited Sync Report");
+            summary.addRaw(`**API Quota Monitoring:** ${startQuota} → ${finalRate.data.resources.core.remaining} (End) | **Used:** ${startQuota - finalRate.data.resources.core.remaining}\n`);
+            summary.addRaw(`<br>✅ **Syncs:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} | ⚠️ **Ahead/Orphan:** ${stats.ahead} | ❌ **Errors:** ${stats.failed}\n`);
 
+            // Add Truncation notice if list is massive
             if (results.length > 1000 || totalProcessed < forks.length) {
               summary.addRaw(`<br>⚠️ **TRUNCATION NOTICE:** Report capped at 1,000 items. Processed: ${totalProcessed}/${forks.length} forks.\n`);
             }
