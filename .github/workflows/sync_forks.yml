@@ -10,29 +10,21 @@ jobs:
       - name: "Sync All Forks via API"
         uses: actions/github-script@v7
         env:
-          # Restored your established secret name
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         with:
-          # Mapping the secret to the action's required input
           github-token: ${{ secrets.SYNC_TOKEN }}
           script: |
             const results = [];
             const stats = { synced: 0, upToDate: 0, blocked: 0, failed: 0 };
             
-            console.log("🔍 Fetching repository list...");
-            let allRepos;
-            try {
-              allRepos = await github.paginate(github.rest.repos.listForAuthenticatedUser, {
-                affiliation: 'owner',
-                per_page: 100
-              });
-            } catch (e) {
-              core.setFailed(`Failed: ${e.message}. Verify SYNC_TOKEN exists in Secrets.`);
-              return;
-            }
+            console.log("🔍 Fetching full repository list...");
+            const allRepos = await github.paginate(github.rest.repos.listForAuthenticatedUser, {
+              affiliation: 'owner',
+              per_page: 100
+            });
             
             const forks = allRepos.filter(r => r.fork === true);
-            console.log(`🚀 Found ${forks.length} forks. Processing...`);
+            console.log(`🚀 Auditing ${forks.length} forks...`);
 
             for (const fork of forks) {
               const fOwner = fork.owner.login;
@@ -41,63 +33,65 @@ jobs:
               let detail = "";
 
               try {
-                // Quota Audit: Stop at 60 points to guarantee summary save
-                const { data: rate } = await github.rest.rateLimit.get();
-                if (rate.resources.core.remaining < 60) {
+                // Quota Check (Pass 7 Audit)
+                const rate = await github.rest.rateLimit.get();
+                if (rate.data.resources.core.remaining < 50) {
                   results.push(["SYSTEM", "⚠️ HALTED", "Quota Limit"]);
                   break;
                 }
 
-                // Safety Audit: Dynamic branch and size detection
                 const { data: repoData } = await github.rest.repos.get({ owner: fOwner, repo: fRepo });
                 
                 if (repoData.parent) {
                   const pSize = repoData.parent.size;
                   const fSize = repoData.size;
 
+                  // Safety Gate
                   if (pSize < (fSize / 2) && fSize > 100) {
                     status = "🛑 BLOCK";
-                    detail = `Upstream (${pSize}KB) < 50%`;
+                    detail = `${pSize}KB vs ${fSize}KB`;
                     stats.blocked++;
                   } else {
                     try {
-                      // Execution: branch-agnostic sync
-                      const syncResponse = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
-                        owner: fOwner,
-                        repo: fRepo,
-                        data: {
-                          branch: repoData.default_branch
-                        }
+                      const res = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
+                        owner: fOwner, repo: fRepo,
+                        data: { branch: repoData.default_branch }
                       });
                       
-                      if (syncResponse.status === 200 || syncResponse.status === 204) {
+                      // LOGICAL IMPROVEMENT: Validating actual merge activity
+                      if (res.status === 200 && res.data?.merge_type && res.data.merge_type !== 'none') {
                         status = "✅ SYNC";
+                        detail = res.data.merge_type;
                         stats.synced++;
+                      } else {
+                        stats.upToDate++;
                       }
                     } catch (e) {
-                      if (e.status === 409) {
-                        stats.upToDate++;
+                      if (e.status === 409) { 
+                        stats.upToDate++; 
                       } else { throw e; }
                     }
                   }
-                } else { stats.upToDate++; }
+                }
               } catch (err) {
                 status = "❌ FAIL";
-                detail = err.message.substring(0, 35);
+                // ERROR AUDIT: Priority extraction of API-specific messages
+                const apiMessage = err.response?.data?.message || err.message || "Unknown";
+                detail = apiMessage.substring(0, 40);
                 stats.failed++;
+                console.log(`❌ ${fRepo}: ${apiMessage}`);
               }
               
               if (status !== "Up-to-date") {
                 results.push([fork.full_name, status, detail]);
-                console.log(`[${stats.synced + stats.upToDate + stats.blocked + stats.failed}/${forks.length}] ${fork.full_name}: ${status}`);
               }
             }
 
-            // Summary Table: Optimized for 32KB buffer (1,100 rows)
+            // Report Generation (Pass 10 Audit: Buffer safety)
             const displayResults = results.slice(0, 1100);
             await core.summary
-              .addHeading("🔄 Sync Report")
-              .addRaw(`**Total Forks:** ${forks.length} | ✅ **Sync:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} | 🛑 **Block:** ${stats.blocked} | ❌ **Err:** ${stats.failed}`)
+              .addHeading("🔄 Sync Activity Report")
+              .addRaw(`✅ **Sync:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} | 🛑 **Block:** ${stats.blocked} | ❌ **Err:** ${stats.failed}`)
               .addTable([
                 [{data: 'Repo', header: true}, {data: 'Stat', header: true}, {data: 'Note', header: true}],
                 ...displayResults
