@@ -15,80 +15,78 @@ jobs:
         run: |
           # 1. Quota Check
           echo "### 📊 API Quota at Start" >> $GITHUB_STEP_SUMMARY
-          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY || echo "Could not fetch quota"
+          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY || true
 
-          # Initialize counters
-          echo "TOTAL=0; SYNCED=0; NO_CHANGE=0; BLOCKED=0; FAILED=0" > counts.tmp
+          # Initialize counters and report
+          TOTAL=0; SYNCED=0; NO_CHANGE=0; BLOCKED=0; FAILED=0
           echo "| Repository | Status | Details |" > table_body.md
           echo "| :--- | :--- | :--- |" >> table_body.md
 
-          # 2. Get list of all forks
+          # 2. Fetch list of forks to a local file
           USER_LOGIN=$(gh api user --jq '.login')
           echo "Fetching forks for $USER_LOGIN..."
-          
-          # Fetching in blocks of 100
-          gh api "users/$USER_LOGIN/repos?per_page=100" --paginate --jq '.[] | select(.fork == true) | {full_name: .full_name, size: .size}' > all_forks.json
+          gh api "users/$USER_LOGIN/repos?per_page=100" --paginate --jq '.[] | select(.fork == true) | "\(.full_name) \(.size)"' > all_forks.txt
 
-          if [ ! -s all_forks.json ]; then
-            echo "❌ Error: all_forks.json is empty. Check PAT scopes."
+          if [ ! -s all_forks.txt ]; then
+            echo "❌ No forks found."
             exit 1
           fi
 
           # 3. Process each fork
-          while read -r fork; do
-            source counts.tmp
+          # We use a standard while-read loop to handle 1500+ lines efficiently
+          while read -r REPO_LINE; do
+            # Safely split Name and Size
+            NAME=$(echo "$REPO_LINE" | awk '{print $1}')
+            MY_SIZE=$(echo "$REPO_LINE" | awk '{print $2}')
             ((TOTAL++))
-            
-            NAME=$(echo "$fork" | jq -r '.full_name')
-            MY_SIZE=$(echo "$fork" | jq -r '.size')
 
-            # Fetch Parent info specifically for the safety check
+            # Fetch Parent info - we use -q to remain silent on errors
             PARENT_DATA=$(gh api "repos/$NAME" --silent --jq '{full_name: .parent.full_name, size: .parent.size}' 2>/dev/null || echo "null")
             PARENT_NAME=$(echo "$PARENT_DATA" | jq -r '.full_name // "null"')
             
             if [ "$PARENT_NAME" == "null" ]; then
               ((FAILED++))
-            else
-              PARENT_SIZE=$(echo "$PARENT_DATA" | jq -r '.size // 0')
-              THRESHOLD=$((MY_SIZE / 2))
+              continue
+            fi
 
-              # Sanity Check
-              if [ "$PARENT_SIZE" -lt "$THRESHOLD" ] && [ "$MY_SIZE" -gt 100 ]; then
-                echo "| $NAME | 🛑 **BLOCKED** | Parent size drop: ${PARENT_SIZE}KB |" >> table_body.md
-                ((BLOCKED++))
-              else
-                # Actual Sync
-                if SYNC_OUT=$(gh repo sync "$NAME" --force=false 2>&1); then
-                  if echo "$SYNC_OUT" | grep -q "already up to date"; then
-                    ((NO_CHANGE++))
-                  else
-                    echo "| $NAME | ✅ Synced | Successfully updated |" >> table_body.md
-                    ((SYNCED++))
-                  fi
+            PARENT_SIZE=$(echo "$PARENT_DATA" | jq -r '.size // 0')
+            THRESHOLD=$((MY_SIZE / 2))
+
+            # 4. Sanity Check
+            if [ "$PARENT_SIZE" -lt "$THRESHOLD" ] && [ "$MY_SIZE" -gt 100 ]; then
+              echo "| $NAME | 🛑 **BLOCKED** | Parent size drop: ${PARENT_SIZE}KB |" >> table_body.md
+              ((BLOCKED++))
+            else
+              # 5. Sync Attempt (captured in a variable to prevent terminal pollution)
+              if SYNC_OUT=$(gh repo sync "$NAME" --force=false 2>&1); then
+                if echo "$SYNC_OUT" | grep -q "already up to date"; then
+                  ((NO_CHANGE++))
                 else
-                  echo "| $NAME | ❌ Failed | Conflict or Permission issue |" >> table_body.md
-                  ((FAILED++))
+                  echo "| $NAME | ✅ Synced | Successfully updated |" >> table_body.md
+                  ((SYNCED++))
                 fi
+              else
+                echo "| $NAME | ❌ Failed | Conflict or Workflow issue |" >> table_body.md
+                ((FAILED++))
               fi
             fi
             
-            echo "TOTAL=$TOTAL; SYNCED=$SYNCED; NO_CHANGE=$NO_CHANGE; BLOCKED=$BLOCKED; FAILED=$FAILED" > counts.tmp
+            # Every 100 repos, print a heartbeat to logs so the job doesn't look dead
+            if (( TOTAL % 100 == 0 )); then echo "Processed $TOTAL repos..."; fi
             
-            # 100ms delay to prevent Abuse limits on large accounts
             sleep 0.1
-          done < all_forks.json
+          done < all_forks.txt
 
-          # 4. Final Report
-          source counts.tmp
+          # 6. Final Report Construction
           echo "### 🔄 Sync Activity Report" >> $GITHUB_STEP_SUMMARY
           echo "- **Total Forks:** $TOTAL" >> $GITHUB_STEP_SUMMARY
           echo "- **Synced:** $SYNCED | **Safety Blocked:** $BLOCKED | **Conflicts:** $FAILED" >> $GITHUB_STEP_SUMMARY
-          echo "- **Already Up-to-Date:** $NO_CHANGE (Hidden from table)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Already Up-to-Date:** $NO_CHANGE" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Only append table if it contains data (more than just the header)
-          if [ $(wc -l < table_body.md) -gt 2 ]; then
+          if [ $(wc -l < table_body.md) -gt 1 ]; then
             cat table_body.md >> $GITHUB_STEP_SUMMARY
           fi
 
-          gh api rate_limit --jq '"### 📊 API Quota at End\nRemaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 API Quota at End" >> $GITHUB_STEP_SUMMARY
+          gh api rate_limit --jq '"Remaining: \(.resources.core.remaining) / \(.resources.core.limit)"' >> $GITHUB_STEP_SUMMARY || true
