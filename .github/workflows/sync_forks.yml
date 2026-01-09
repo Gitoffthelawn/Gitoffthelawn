@@ -25,32 +25,38 @@ jobs:
             let hasTableEntries = false;
 
             try {
-              console.log("Fetching repositories using authenticated user endpoint...");
+              // 1. Quota Check (Start)
+              const quotaStart = JSON.parse(execSync('gh api rate_limit').toString());
+              const remainingStart = quotaStart.resources.core.remaining;
+
+              console.log("Deep Scanning for all owned repositories...");
               
-              // We use /user/repos which is the most powerful endpoint for the token owner
-              execSync(`gh api "user/repos?per_page=100&affiliation=owner" --paginate > forks_raw.json`);
+              // We removed all filters except owner and visibility=all. 
+              // This is the "loudest" possible request for a Classic PAT.
+              execSync(`gh api "user/repos?per_page=100&affiliation=owner&visibility=all" --paginate > forks_raw.json`);
               
               const rawData = fs.readFileSync('forks_raw.json', 'utf8').trim();
               if (!rawData || rawData === "[]") {
-                throw new Error("API returned an empty list. This usually means the PAT lacks 'repo' scope or is pointed at the wrong account.");
+                throw new Error("The API returned zero repositories. This indicates the TOKEN is authorized but cannot see your account data.");
               }
 
               const sanitized = "[" + rawData.replace(/\]\s*\[/g, ',') + "]";
               const allRepos = JSON.parse(sanitized);
               
-              console.log(`Total Repositories Found: ${allRepos.length}`);
-              
               const targetForks = allRepos.filter(f => f.fork === true);
-              console.log(`Total Forks Found: ${targetForks.length}`);
+              console.log(`API found ${allRepos.length} total repos. ${targetForks.length} are forks.`);
 
               if (targetForks.length === 0) {
-                // DIAGNOSTIC: List first 3 repos found to see what we ARE seeing
-                const sample = allRepos.slice(0, 3).map(r => r.full_name).join(", ");
-                const diag = `### 🔄 Sync Activity Report\n- **Total Forks Found:** 0\n\n**Diagnostic:** API found ${allRepos.length} repos, but 0 forks. Sample repos seen: \`${sample}\`. If these aren't yours, the PAT is the issue.`;
+                const sample = allRepos.slice(0, 5).map(r => r.full_name).join(", ");
+                let diag = `### 📊 API Quota\n- **Remaining:** ${remainingStart} / 5000\n\n`;
+                diag += `### 🔄 Sync Activity Report\n- **Total Forks Found:** 0\n\n`;
+                diag += `**Diagnostic:** The API sees ${allRepos.length} repos. Sample: \`${sample}\`.\n\n`;
+                diag += `If these aren't your 1,500 repos, your PAT may be authorized for a different 'context' or 'organization'.`;
                 fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, diag);
                 return;
               }
 
+              // 2. Process the Forks
               for (const fork of targetForks) {
                 stats.total++;
                 const name = fork.full_name;
@@ -61,17 +67,19 @@ jobs:
                   const parent = parentData.parent;
 
                   if (!parent) {
-                    failureLog += `| ${name} | Parent inaccessible |\n`;
+                    failureLog += `| ${name} | Parent info missing/private |\n`;
                     stats.failed++;
                     hasFailures = true;
                     continue;
                   }
 
+                  // Sanity Check: Parent size vs Fork size
                   if (parent.size < (mySize / 2) && mySize > 100) {
-                    tableRows += `| ${name} | 🛑 **BLOCKED** | Parent size (${parent.size}KB) < 50% of fork |\n`;
+                    tableRows += `| ${name} | 🛑 **BLOCKED** | Size Trigger: Parent ${parent.size}KB vs Fork ${mySize}KB |\n`;
                     stats.blocked++;
                     hasTableEntries = true;
                   } else {
+                    // Sync Attempt
                     try {
                       const syncOut = execSync(`gh repo sync "${name}" --force=false 2>&1`).toString();
                       if (syncOut.includes("already up to date")) {
@@ -90,25 +98,27 @@ jobs:
                       hasTableEntries = true;
                     }
                   }
-                } catch (e) {
-                  stats.failed++;
-                }
+                } catch (e) { stats.failed++; }
 
                 if (stats.total % 100 === 0) console.log(`Processed ${stats.total}...`);
-                await new Promise(r => setTimeout(r, 100));
+                await new Promise(r => setTimeout(r, 120)); // Gentle pacing
               }
 
-              let summary = `### 🔄 Sync Activity Report\n` +
-                `- **Total Forks Processed:** ${stats.total}\n` +
-                `- **Synced:** ${stats.synced} | **Safety Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n\n`;
+              // 3. Final Quota & Summary
+              const quotaEnd = JSON.parse(execSync('gh api rate_limit').toString());
+              let finalSummary = `### 📊 API Quota\n- **Start:** ${remainingStart}\n- **End:** ${quotaEnd.resources.core.remaining}\n\n`;
+              finalSummary += `### 🔄 Sync Activity Report\n` +
+                `- **Total Forks:** ${stats.total}\n` +
+                `- **Synced:** ${stats.synced} | **Safety Blocked:** ${stats.blocked} | **Errors:** ${stats.failed}\n` +
+                `- **Already Up-to-Date:** ${stats.noChange}\n\n`;
 
-              if (hasTableEntries) summary += tableRows;
-              if (hasFailures) summary += failureLog;
+              if (hasTableEntries) finalSummary += tableRows;
+              if (hasFailures) finalSummary += failureLog;
 
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, finalSummary);
 
             } catch (err) {
-              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ❌ Error\n${err.message}`);
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ❌ Fatal Error\n${err.message}`);
               process.exit(1);
             }
           }
