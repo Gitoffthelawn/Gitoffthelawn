@@ -73,4 +73,50 @@ jobs:
                   if (result.message && result.message.includes("Successfully merged")) {
                     tableRows += `| ${name} | ✅ Synced | New changes merged |\n`;
                     stats.synced++;
-                  } else if (result.
+                  } else if (result.message && (result.message.includes("already up to date") || result.message.includes("nothing to fetch"))) {
+                    stats.upToDate++;
+                  } else {
+                    failureLog += `| ${name} | ${result.message || "Conflict or Branch issue"} |\n`;
+                    stats.failed++;
+                    hasFailures = true;
+                  }
+                } catch (e) {
+                  stats.failed++;
+                }
+                
+                if (stats.total % 100 === 0) console.log(`Progress: ${stats.total}/${targetForks.length}`);
+                await new Promise(r => setTimeout(r, 50)); // Prevent secondary rate limits
+              }
+
+              // 4. Final Quota & Summary
+              const qEnd = JSON.parse(execSync(`curl -s -H "Authorization: token ${token}" https://api.github.com/rate_limit`).toString()).resources.core;
+
+              let finalSummary = `### 📊 API Quota Status\n`;
+              finalSummary += `- **Starting Quota:** ${qStart.remaining}\n`;
+              finalSummary += `- **Ending Quota:** ${qEnd.remaining} (Used: ${qStart.remaining - qEnd.remaining})\n\n`;
+
+              finalSummary += `### 🔄 Sync Activity Report\n` +
+                `- **Total Forks Processed:** ${stats.total}\n` +
+                `- **Successfully Synced:** ${stats.synced}\n` +
+                `- **Already Up-to-Date:** ${stats.upToDate}\n` +
+                `- **Safety Blocked:** ${stats.blocked}\n` +
+                `- **Errors/Conflicts:** ${stats.failed}\n\n`;
+
+              if (stats.synced > 0 || stats.blocked > 0) {
+                finalSummary += "#### ✅ Notable Changes\n" + tableRows + "\n\n";
+              } else {
+                finalSummary += "_All repositories were verified as synchronized._\n\n";
+              }
+
+              if (hasFailures) finalSummary += failureLog;
+              
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, finalSummary);
+
+            } catch (err) {
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ❌ Fatal Error\n${err.message}`);
+              process.exit(1);
+            }
+          }
+          run();
+          EOF
+          node sync.js
