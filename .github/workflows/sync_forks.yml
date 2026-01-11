@@ -4,10 +4,10 @@ on:
   # Allows manual triggers from the "Actions" tab
   workflow_dispatch:
   
-  # Automates the run at 04:17 UTC every Wednesday morning
-  # This specific offset helps avoid peak GitHub traffic congestion
+  # Automates the run at 04:17, 10:17, 16:17, and 22:17 UTC every day
+  # The offset helps avoid peak GitHub traffic congestion
   schedule:
-    - cron: '17 4 * * 3' 
+    - cron: '17 4/6 * * *' 
 
 jobs:
   sync-logic:
@@ -44,7 +44,7 @@ jobs:
               return;
             }
 
-            console.log(`🚀 Starting 400,000-pass audited sync of ${forks.length} forks.`);
+            console.log(`🚀 Starting sync of ${forks.length} forks.`);
 
             // 4. MAIN PROCESSING LOOP
             for (const [index, fork] of forks.entries()) {
@@ -163,8 +163,8 @@ jobs:
             const totalProcessed = stats.synced + stats.upToDate + stats.ahead + stats.failed;
 
             let summary = core.summary.addHeading("🔄 v11.4 Diamond-Harden Sync Report");
-            summary.addRaw(`**Quota Usage:** ${startQuota} → ${finalRate.data.resources.core.remaining} | **Used:** ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\n`);
-            summary.addRaw(`<br>✅ **Synced:** ${stats.synced} | ➖ **Up-to-Date:** ${stats.upToDate} (Hidden) | ⚠️ **Ahead:** ${stats.ahead} | ❌ **Errors:** ${stats.failed}\n`);
+            summary.addRaw(`Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\n`);
+            summary.addRaw(`<br>✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (Hidden) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`);
 
             // 9. EXCEPTION-ONLY FILTERING
             // We hide the 'Up-to-Date' rows to keep the report scannable
@@ -173,7 +173,7 @@ jobs:
             if (exceptions.length === 0) {
               summary.addRaw(`<br>✨ **All ${forks.length} forks are perfectly in sync.**`);
             } else {
-              summary.addRaw(`<br>📝 **Required Actions (${exceptions.length} items):**\n`);
+              summary.addRaw(`<br>📝 Required Actions (${exceptions.length} items):\n`);
               // Writes the results table, capped at 1,000 exceptions to prevent UI lag
               await summary.addTable([
                   [{data: 'Repository', header: true}, {data: 'Status', header: true}, {data: 'Notes', header: true}],
