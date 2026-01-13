@@ -4,10 +4,10 @@ on:
   # Allows manual triggers from the "Actions" tab
   workflow_dispatch:
   
-  # Automates the run at 04:17, 10:17, 16:17, and 22:17 UTC every day
+  # Automates the run at 04:17 and 16:17 UTC every day
   # The offset helps avoid peak GitHub traffic congestion
   schedule:
-    - cron: '17 4/6 * * *' 
+    - cron: '17 4/12 * * *' 
 
 jobs:
   sync-logic:
