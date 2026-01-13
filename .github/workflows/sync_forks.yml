@@ -1,10 +1,10 @@
 name: "Sync forks"
 
 on:
-  # Allows manual triggers from the "Actions" tab
+  # Allow manual triggers from the "Actions" tab
   workflow_dispatch:
   
-  # Automates the run at 04:17 and 16:17 UTC every day
+  # Automate the run at 04:17 and 16:17 UTC every day
   # The offset helps avoid peak GitHub traffic congestion
   schedule:
     - cron: '17 4/12 * * *' 
@@ -16,10 +16,10 @@ jobs:
       - name: "Triage and Sync All Branches"
         uses: actions/github-script@v7
         env:
-          # Injects your secret Fine-grained Token as an environment variable
+          # Inject secret Fine-grained Token as an environment variable
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         with:
-          # Sets the authenticated client to use your specific token
+          # Set the authenticated client to use specific token
           github-token: ${{ secrets.SYNC_TOKEN }}
           script: |
             // 1. DATA STRUCTURES & INITIALIZATION
@@ -33,7 +33,7 @@ jobs:
             const startQuota = initialRate.data.resources.core.remaining;
 
             // 3. REPOSITORY DISCOVERY (PAGINATED)
-            // Automatically handles the pagination of your ~1,428 repositories
+            // Automatically handle the pagination of large number of repositories
             const forks = await github.paginate(github.rest.repos.listForAuthenticatedUser, {
               affiliation: 'owner', 
               per_page: 100         
@@ -51,7 +51,7 @@ jobs:
               const currentPos = index + 1;
               const dBranch = fork.default_branch; // Snapshots 'main' or 'master' name
               
-              // Progress Logging in the Actions console
+              // Progress logging in the Actions console
               if (currentPos % 10 === 0 || currentPos === forks.length) {
                 console.log(`[${currentPos}/${forks.length}] Processing: ${fork.full_name}`);
               }
@@ -105,7 +105,7 @@ jobs:
                 }
 
                 // 6. DEEP SYNC (ALL BRANCHES)
-                // If the default branch is behind, we attempt to sync all branches
+                // If the default branch is behind, attempt to sync all branches
                 const branches = await github.paginate(github.rest.repos.listBranches, {
                   owner: fork.owner.login, repo: fork.name
                 });
@@ -129,7 +129,7 @@ jobs:
                       await delay(150); 
                     }
                   } catch (e) {
-                    // 409 status means manual intervention is required
+                    // 409 status indicates manual intervention is required
                     if (e.status === 409) branchConflicts++;
                   }
                 }
@@ -141,7 +141,7 @@ jobs:
                 results.push([fork.full_name, "✅ SYNCED", note]);
 
                 // 7. QUOTA SAFETY VALVE
-                // Stops early if quota hits 400 to allow the report to write successfully
+                // Stop early if quota hits 400 to allow the report to write successfully
                 if (currentPos % 25 === 0) {
                   const rate = await github.rest.rateLimit.get();
                   if (rate.data.resources.core.remaining < 400) {
@@ -162,19 +162,19 @@ jobs:
             const finalRate = await github.rest.rateLimit.get();
             const totalProcessed = stats.synced + stats.upToDate + stats.ahead + stats.failed;
 
-            let summary = core.summary.addHeading("🔄 v11.4 Diamond-Harden Sync Report");
+            let summary = core.summary.addHeading("🔄 Sync Report");
             summary.addRaw(`Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\n`);
             summary.addRaw(`<br>✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (Hidden) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`);
 
             // 9. EXCEPTION-ONLY FILTERING
-            // We hide the 'Up-to-Date' rows to keep the report scannable
+            // Hide the 'Up-to-Date' rows to keep the report scannable
             const exceptions = results.filter(r => r[1] !== "➖ UP-TO-DATE");
 
             if (exceptions.length === 0) {
               summary.addRaw(`<br>✨ **All ${forks.length} forks are perfectly in sync.**`);
             } else {
               summary.addRaw(`<br>📝 Required Actions (${exceptions.length} items):\n`);
-              // Writes the results table, capped at 1,000 exceptions to prevent UI lag
+              // Write the results table, capped at 1,000 exceptions to prevent UI lag
               await summary.addTable([
                   [{data: 'Repository', header: true}, {data: 'Status', header: true}, {data: 'Notes', header: true}],
                   ...exceptions.slice(0, 1000)
