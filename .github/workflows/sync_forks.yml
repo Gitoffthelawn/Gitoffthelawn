@@ -1,13 +1,13 @@
 name: "Sync forks"
 
 on:
-  # Allow manual triggers from the "Actions" tab
+  # Allow manual triggers from the 'Actions' tab
   workflow_dispatch:
   
-  # Automate the run at 04:17 and 16:17 UTC every day
+  # Automate the run at 04:17 UTC every day
   # The offset helps avoid peak GitHub traffic congestion
   schedule:
-    - cron: '17 4/12 * * *' 
+    - cron: '17 4 * * *' 
 
 jobs:
   sync-logic:
