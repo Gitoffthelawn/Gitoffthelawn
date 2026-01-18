@@ -4,10 +4,10 @@ on:
   # Allow manual triggers from the 'Actions' tab
   workflow_dispatch:
   
-  # Automate the run at 04:17 UTC every day
+  # Automate the run at 03:17 UTC every day
   # The offset helps avoid peak GitHub traffic congestion
   schedule:
-    - cron: '17 4 * * *' 
+    - cron: '17 3 * * *' 
 
 jobs:
   sync-logic:
@@ -57,14 +57,14 @@ jobs:
               }
 
               try {
-                // Fetch full metadata to find the 'parent' (upstream) link
+                // Fetch full metadata to find the parent (upstream) link
                 const { data: repoDetail } = await github.rest.repos.get({ 
                   owner: fork.owner.login, repo: fork.name 
                 });
                 
                 // --- CASE: ORPHAN REPOSITORY ---
                 if (!repoDetail.parent) {
-                  results.push([fork.full_name, "⚠️ ORPHAN", "No upstream parent found."]);
+                  results.push([fork.full_name, "⚠️ ORPHAN", "No upstream parent found"]);
                   stats.ahead++;
                   continue;
                 }
@@ -83,7 +83,7 @@ jobs:
                 } catch (e) {
                   // Catch cases where upstream is deleted or private (404)
                   if (e.status === 404) {
-                    results.push([fork.full_name, "❌ FAIL", `Upstream @${uOwner} hidden.`]);
+                    results.push([fork.full_name, "❌ FAIL", `Upstream @${uOwner} hidden`]);
                     stats.failed++;
                     continue;
                   }
@@ -93,7 +93,7 @@ jobs:
                 // --- CASE: FORK IS AHEAD (DIVERGED) ---
                 if (comp.data.ahead_by > 0) {
                   stats.ahead++;
-                  results.push([fork.full_name, "⚠️ TRIAGE", `Root ahead by ${comp.data.ahead_by} commits.`]);
+                  results.push([fork.full_name, "⚠️ TRIAGE", `Fork ahead by ${comp.data.ahead_by} commits`]);
                   continue;
                 }
 
@@ -125,8 +125,8 @@ jobs:
                       if (res.data.merge_type === 'fast-forward') {
                         branchSyncs++;
                       }
-                      // 150ms delay to prevent Secondary Rate Limit triggers
-                      await delay(150); 
+                      // 100ms delay to prevent Secondary Rate Limit triggers
+                      await delay(100); 
                     }
                   } catch (e) {
                     // 409 status indicates manual intervention is required
@@ -145,7 +145,7 @@ jobs:
                 if (currentPos % 25 === 0) {
                   const rate = await github.rest.rateLimit.get();
                   if (rate.data.resources.core.remaining < 400) {
-                    results.push(["SYSTEM", "🛑 HALTED", "Quota Buffer Reached."]);
+                    results.push(["SYSTEM", "🛑 HALTED", "Quota Buffer Reached"]);
                     break;
                   }
                 }
@@ -167,7 +167,7 @@ jobs:
             summary.addRaw(`<br>✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (Hidden) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`);
 
             // 9. EXCEPTION-ONLY FILTERING
-            // Hide the 'Up-to-Date' rows to keep the report scannable
+            // Hide the 'Up-to-Date' rows to make the report easy to visually scan
             const exceptions = results.filter(r => r[1] !== "➖ UP-TO-DATE");
 
             if (exceptions.length === 0) {
