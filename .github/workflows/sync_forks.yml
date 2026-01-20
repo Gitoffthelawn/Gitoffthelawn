@@ -136,7 +136,7 @@ jobs:
                 
                 stats.synced++;
                 const branchWord = branchSyncs === 1 ? "branch" : "branches";
-                let note = `Updated ${branchSyncs} ${branchWord}.`;
+                let note = `Updated ${branchSyncs} ${branchWord}`;
                 if (branchConflicts > 0) note += ` (${branchConflicts} skipped - conflicts)`;
                 results.push([fork.full_name, "✅ SYNCED", note]);
 
