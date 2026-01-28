@@ -4,10 +4,10 @@ on:
   # Allow manual triggers from the 'Actions' tab
   workflow_dispatch:
   
-  # Automate the run at 03:17 UTC every day
+  # Automate the run at 02:17 UTC every day
   # The offset helps avoid peak GitHub traffic congestion
   schedule:
-    - cron: '17 3 * * *' 
+    - cron: '16 3 * * *' 
 
 jobs:
   sync-logic:
@@ -71,6 +71,30 @@ jobs:
 
                 const uOwner = repoDetail.parent.owner.login;
                 const uRepo = repoDetail.parent.name;
+
+                // 5a. REPO SIZE SAFETY CHECK (fork vs upstream)
+                // GitHub's repo `size` is the total size of all files at the latest commit, in KB.
+                const forkSize = repoDetail.size ?? 0;
+                const upstreamSize = repoDetail.parent.size ?? 0;
+
+                // If sizes are known and the fork differs from upstream by more than 50%, skip syncing.
+                if (forkSize > 0 && upstreamSize > 0) {
+                  const sizeRatio = forkSize / upstreamSize;
+                  const inverseRatio = upstreamSize / forkSize;
+
+                  // Treat either direction as "> 50% difference":
+                  // - fork more than 1.5x upstream
+                  // - or upstream more than 1.5x fork
+                  if (sizeRatio > 1.5 || inverseRatio > 1.5) {
+                    stats.ahead++;
+                    results.push([
+                      fork.full_name,
+                      "⚠️ TRIAGE",
+                      `Repo size diverged by more than 50% (fork=${forkSize}KB, upstream=${upstreamSize}KB)`
+                    ]);
+                    continue;
+                  }
+                }
 
                 // 5. UPSTREAM COMPARISON (GATEKEEPER)
                 let comp;
