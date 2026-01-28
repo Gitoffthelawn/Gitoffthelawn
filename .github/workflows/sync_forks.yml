@@ -80,7 +80,7 @@ jobs:
                 const uOwner = repoDetail.parent.owner.login;
                 const uRepo = repoDetail.parent.name;
 
-                // v05 FIX: ONLY triage if FORK > 50% LARGER than upstream (never skip if upstream larger)
+                // Only triage if fork >50% larger than upstream (never skip if upstream larger)
                 const forkSize = repoDetail.size ?? 0;
                 const upstreamSize = repoDetail.parent.size ?? 0;
                 if (forkSize > 0 && upstreamSize > 0 && forkSize > (upstreamSize * 1.5)) {
@@ -132,7 +132,7 @@ jobs:
                 let branchSyncs = 0;
                 let branchConflicts = 0;
 
-                for (const b of branches.slice(0, 20)) { // v05: cap at 20 branches
+                for (const b of branches) { // Syncs all branches (add a cap if rate limited)
                   try {
                     const res = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
                       owner: fork.owner.login, repo: fork.name,
@@ -155,7 +155,7 @@ jobs:
                 
                 stats.synced++;
                 const branchWord = branchSyncs === 1 ? "branch" : "branches";
-                let note = `Updated ${branchSyncs}/${Math.min(20, branches.length)} ${branchWord}`;
+                let note = `Updated ${branchSyncs}/${branches.length} ${branchWord}`;
                 if (branchConflicts > 0) note += ` (${branchConflicts} skipped - conflicts)`;
                 results.push([fork.full_name, "✅ SYNCED", note]);
 
@@ -193,29 +193,22 @@ jobs:
             if (exceptions.length === 0) {
               core.summary.addRaw(`<br>✨ **All ${forks.length} forks are perfectly in sync.**`);
             } else {
-              // v05 FIX: Working Markdown links in table (bold + proper escaping)
+              // Raw Markdown table - links render properly
               const exceptionRows = exceptions.slice(0, 1000).map(row => {
-                const fullName = String(row[0]);      // e.g. "user/repo"
+                const fullName = String(row[0]);
                 const status = row[1];
                 const notes = row[2] ?? "";
-
+                
+                // Raw Markdown (no objects) - GitHub renders links correctly
                 const repoUrl = `https://github.com/${fullName}`;
-                const linkedRepo = `**[${fullName}](${repoUrl})**`;
+                const linkedRepo = `[${fullName}](${repoUrl})`;
 
-                return [linkedRepo, status, notes];
-              });
+                return `| ${linkedRepo} | ${status} | ${notes} |`;
+              }).join('\\n');
 
               core.summary
                 .addRaw(`<br>📝 Required Actions (${exceptions.length} items):\\n`)
-                // Write the results table, capped at 1,000 exceptions to prevent UI lag
-                .addTable([
-                  [
-                    {data: 'Repository', header: true},
-                    {data: 'Status', header: true},
-                    {data: 'Notes', header: true}
-                  ],
-                  ...exceptionRows
-                ]);
+                .addRaw(`| Repository | Status | Notes |\\n| --- | --- | --- |\\n${exceptionRows}`);
             }
 
             await core.summary.write();
