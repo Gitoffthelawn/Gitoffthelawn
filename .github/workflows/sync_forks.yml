@@ -172,11 +172,30 @@ jobs:
 
             if (exceptions.length === 0) {
               summary.addRaw(`<br>✨ **All ${forks.length} forks are perfectly in sync.**`);
+              await summary.write();
             } else {
+              // Map exceptions so the Repository cell is a Markdown link
+              const exceptionRows = exceptions.slice(0, 1000).map(row => {
+                const fullName = String(row[0]);      // e.g. "user/repo"
+                const status = row[1];
+                const notes = row[2] ?? "";
+
+                const repoUrl = `https://github.com/${fullName}`;
+                const linkedRepo = `[${fullName}](${repoUrl})`;
+
+                return [linkedRepo, status, notes];
+              });
+
               summary.addRaw(`<br>📝 Required Actions (${exceptions.length} items):\n`);
               // Write the results table, capped at 1,000 exceptions to prevent UI lag
-              await summary.addTable([
-                  [{data: 'Repository', header: true}, {data: 'Status', header: true}, {data: 'Notes', header: true}],
-                  ...exceptions.slice(0, 1000)
-              ]).write();
+              await summary
+                .addTable([
+                  [
+                    { data: 'Repository', header: true },
+                    { data: 'Status', header: true },
+                    { data: 'Notes', header: true }
+                  ],
+                  ...exceptionRows
+                ])
+                .write();
             }
