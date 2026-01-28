@@ -193,22 +193,24 @@ jobs:
             if (exceptions.length === 0) {
               core.summary.addRaw(`<br>✨ **All ${forks.length} forks are perfectly in sync.**`);
             } else {
-              // Raw Markdown table - links render properly
+              // Using addTable() so table links work
               const exceptionRows = exceptions.slice(0, 1000).map(row => {
-                const fullName = String(row[0]);
+                const fullName = String(row[0]);  // "user/repo" - GitHub auto-links
                 const status = row[1];
                 const notes = row[2] ?? "";
-                
-                // Raw Markdown (no objects) - GitHub renders links correctly
-                const repoUrl = `https://github.com/${fullName}`;
-                const linkedRepo = `[${fullName}](${repoUrl})`;
-
-                return `| ${linkedRepo} | ${status} | ${notes} |`;
-              }).join('\\n');
+                return [fullName, status, notes];  // Plain arrays = clickable links
+              });
 
               core.summary
                 .addRaw(`<br>📝 Required Actions (${exceptions.length} items):\\n`)
-                .addRaw(`| Repository | Status | Notes |\\n| --- | --- | --- |\\n${exceptionRows}`);
+                .addTable([
+                  [
+                    {data: 'Repository', header: true},
+                    {data: 'Status', header: true},
+                    {data: 'Notes', header: true}
+                  ],
+                  ...exceptionRows
+                ]);
             }
 
             await core.summary.write();
