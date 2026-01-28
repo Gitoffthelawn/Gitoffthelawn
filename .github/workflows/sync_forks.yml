@@ -4,10 +4,10 @@ on:
   # Allow manual triggers from the 'Actions' tab
   workflow_dispatch:
   
-  # Automate the run at 01:17 UTC every day
+  # Automate the run at 02:17 UTC every day
   # The offset helps avoid peak GitHub traffic congestion
   schedule:
-    - cron: '17 1 * * *' 
+    - cron: '17 2 * * *' 
 
 jobs:
   sync-logic:
@@ -62,7 +62,7 @@ jobs:
                   owner: fork.owner.login, repo: fork.name 
                 });
 
-                // Always check branch count for every fork (adds 1 API call per fork)
+                // Check branch count for every fork
                 const branches = await github.paginate(github.rest.repos.listBranches, {
                   owner: fork.owner.login, repo: fork.name
                 });
@@ -80,28 +80,17 @@ jobs:
                 const uOwner = repoDetail.parent.owner.login;
                 const uRepo = repoDetail.parent.name;
 
-                // 5a. REPO SIZE SAFETY CHECK (fork vs upstream)
-                // GitHub's repo `size` is the total size of all files at the latest commit, in KB.
+                // v05 FIX: ONLY triage if FORK > 50% LARGER than upstream (never skip if upstream larger)
                 const forkSize = repoDetail.size ?? 0;
                 const upstreamSize = repoDetail.parent.size ?? 0;
-
-                // If sizes are known and the fork differs from upstream by more than 50%, skip syncing.
-                if (forkSize > 0 && upstreamSize > 0) {
-                  const sizeRatio = forkSize / upstreamSize;
-                  const inverseRatio = upstreamSize / forkSize;
-
-                  // Treat either direction as "> 50% difference":
-                  // - fork more than 1.5x upstream
-                  // - or upstream more than 1.5x fork
-                  if (sizeRatio > 1.5 || inverseRatio > 1.5) {
-                    stats.ahead++;
-                    results.push([
-                      fork.full_name,
-                      "⚠️ TRIAGE",
-                      `Repo size diverged by more than 50% (fork=${forkSize}KB, upstream=${upstreamSize}KB)`
-                    ]);
-                    continue;
-                  }
+                if (forkSize > 0 && upstreamSize > 0 && forkSize > (upstreamSize * 1.5)) {
+                  stats.ahead++;
+                  results.push([
+                    fork.full_name,
+                    "⚠️ TRIAGE",
+                    `Fork oversized (${forkSize}KB vs upstream ${upstreamSize}KB)`
+                  ]);
+                  continue;
                 }
 
                 // 5. UPSTREAM COMPARISON (GATEKEEPER)
@@ -143,7 +132,7 @@ jobs:
                 let branchSyncs = 0;
                 let branchConflicts = 0;
 
-                for (const b of branches) {
+                for (const b of branches.slice(0, 20)) { // v05: cap at 20 branches
                   try {
                     const res = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
                       owner: fork.owner.login, repo: fork.name,
@@ -166,7 +155,7 @@ jobs:
                 
                 stats.synced++;
                 const branchWord = branchSyncs === 1 ? "branch" : "branches";
-                let note = `Updated ${branchSyncs}/${branches.length} ${branchWord}`;
+                let note = `Updated ${branchSyncs}/${Math.min(20, branches.length)} ${branchWord}`;
                 if (branchConflicts > 0) note += ` (${branchConflicts} skipped - conflicts)`;
                 results.push([fork.full_name, "✅ SYNCED", note]);
 
@@ -194,8 +183,8 @@ jobs:
 
             core.summary
               .addHeading("🔄 Sync Report")
-              .addRaw(`Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\n`)
-              .addRaw(`<br>✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (hidden from table below) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`);
+              .addRaw(`Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\\n`)
+              .addRaw(`<br>✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (hidden from table below) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\\n`);
 
             // 9. EXCEPTION-ONLY FILTERING
             // Hide the 'Up-to-Date' rows to make the report easy to visually scan
@@ -204,20 +193,20 @@ jobs:
             if (exceptions.length === 0) {
               core.summary.addRaw(`<br>✨ **All ${forks.length} forks are perfectly in sync.**`);
             } else {
-              // Map exceptions so the Repository cell is a Markdown link
+              // v05 FIX: Working Markdown links in table (bold + proper escaping)
               const exceptionRows = exceptions.slice(0, 1000).map(row => {
                 const fullName = String(row[0]);      // e.g. "user/repo"
                 const status = row[1];
                 const notes = row[2] ?? "";
 
                 const repoUrl = `https://github.com/${fullName}`;
-                const linkedRepo = `[${fullName}](${repoUrl})`;
+                const linkedRepo = `**[${fullName}](${repoUrl})**`;
 
                 return [linkedRepo, status, notes];
               });
 
               core.summary
-                .addRaw(`<br>📝 Required Actions (${exceptions.length} items):\n`)
+                .addRaw(`<br>📝 Required Actions (${exceptions.length} items):\\n`)
                 // Write the results table, capped at 1,000 exceptions to prevent UI lag
                 .addTable([
                   [
