@@ -4,10 +4,10 @@ on:
   # Allow manual triggers from the 'Actions' tab
   workflow_dispatch:
   
-  # Automate the run at 02:17 UTC every day
+  # Automate the run at 01:17 UTC every day
   # The offset helps avoid peak GitHub traffic congestion
   schedule:
-    - cron: '17 2 * * *' 
+    - cron: '17 1 * * *' 
 
 jobs:
   sync-logic:
@@ -61,6 +61,14 @@ jobs:
                 const { data: repoDetail } = await github.rest.repos.get({ 
                   owner: fork.owner.login, repo: fork.name 
                 });
+
+                // Always check branch count for every fork (adds 1 API call per fork)
+                const branches = await github.paginate(github.rest.repos.listBranches, {
+                  owner: fork.owner.login, repo: fork.name
+                });
+                if (branches.length >= 10) {
+                  console.log(`Fork with many branches (${branches.length}): ${fork.full_name}`);
+                }
                 
                 // --- CASE: ORPHAN REPOSITORY ---
                 if (!repoDetail.parent) {
@@ -130,14 +138,7 @@ jobs:
 
                 // 6. DEEP SYNC (ALL BRANCHES)
                 // If the default branch is behind, attempt to sync all branches
-                const branches = await github.paginate(github.rest.repos.listBranches, {
-                  owner: fork.owner.login, repo: fork.name
-                });
-
-                // Log forks with many branches (10+)
-                if (branches.length >= 10) {
-                  console.log(`Fork with many branches (${branches.length}): ${fork.full_name}`);
-                }
+                // Note: branches already fetched above, can reuse if needed
 
                 let branchSyncs = 0;
                 let branchConflicts = 0;
