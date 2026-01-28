@@ -219,7 +219,11 @@ jobs:
                 .addRaw(`<br>📝 Required Actions (${exceptions.length} items):\n`)
                 // Write the results table, capped at 1,000 exceptions to prevent UI lag
                 .addTable([
-                  [{data: 'Repository', header: true}, {data: 'Status', header: true}, {data: 'Notes', header: true}],
+                  [
+                    {data: 'Repository', header: true},
+                    {data: 'Status', header: true},
+                    {data: 'Notes', header: true}
+                  ],
                   ...exceptionRows
                 ]);
             }
