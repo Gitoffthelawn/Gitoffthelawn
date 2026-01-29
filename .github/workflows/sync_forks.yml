@@ -183,8 +183,8 @@ jobs:
 
             core.summary
               .addHeading("🔄 Sync Report")
-              .addRaw(`Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\\n`)
-              .addRaw(`<br>✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (hidden from table below) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\\n`);
+              .addRaw(`Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\n`)
+              .addRaw(`<br>✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (hidden from table below) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`);
 
             // 9. EXCEPTION-ONLY FILTERING
             // Hide the 'Up-to-Date' rows to make the report easy to visually scan
@@ -202,7 +202,7 @@ jobs:
               });
 
               core.summary
-                .addRaw(`<br>📝 Required Actions (${exceptions.length} items):\\n`)
+                .addRaw(`<br>📝 Required Actions (${exceptions.length} items):\n`)
                 .addTable([
                   [
                     {data: 'Repository', header: true},
