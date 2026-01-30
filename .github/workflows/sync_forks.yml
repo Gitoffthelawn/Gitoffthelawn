@@ -66,7 +66,7 @@ jobs:
                 const branches = await github.paginate(github.rest.repos.listBranches, {
                   owner: fork.owner.login, repo: fork.name
                 });
-                if (branches.length >= 10) {
+                if (branches.length >= 20) {
                   console.log(`Fork with many branches (${branches.length}): ${fork.full_name}`);
                 }
                 
@@ -154,7 +154,7 @@ jobs:
                 }
                 
                 stats.synced++;
-                const branchWord = branchSyncs === 1 ? "branch" : "branches";
+                const branchWord = branches.length === 1 ? "branch" : "branches";
                 let note = `Updated ${branchSyncs}/${branches.length} ${branchWord}`;
                 if (branchConflicts > 0) note += ` (${branchConflicts} skipped - conflicts)`;
                 results.push([fork.full_name, "✅ SYNCED", note]);
