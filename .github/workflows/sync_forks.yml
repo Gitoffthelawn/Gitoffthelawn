@@ -200,7 +200,7 @@ jobs:
             } else {
               const exceptionRows = exceptions.slice(0, 1000).map(row => {
                 const repo = clean(row[0]); // "owner/repo"
-                return [`[${repo}](https://github.com/${repo})`, clean(row[1]), clean(row[2])];
+                return [`https://github.com/${repo}`, clean(row[1]), clean(row[2])];
               });
 
               await core.summary
