@@ -192,28 +192,32 @@ jobs:
             // using a top-level async function or ensure surrounding function is async
             const clean = s => String(s ?? '').trim().replace(/[\u200B-\u200F\uFEFF\u00A0]/g, '');
 
-            const exceptions = results.filter(r => r !== "➖ UP-TO-DATE");[1]
+            const exceptions = results.filter(r => r[1] !== "➖ UP-TO-DATE");
 
             if (exceptions.length === 0) {
               await core.summary
-                .addRaw(`\n✨ **All ${forks.length} forks are perfectly in sync.**\n`)
+                .addRaw(`\\n✨ **All ${forks.length} forks are perfectly in sync.**\\n`)
                 .write();
             } else {
               const exceptionRows = exceptions.slice(0, 1000).map(row => {
-                const repoName = clean(row); // "owner/repo"
+                const repoName = clean(row[0]); // "owner/repo"
                 const repoUrl = `https://github.com/${repoName}`;
                 return [
                   { data: repoName, href: repoUrl },
-                  clean(row),[1]
-                  clean(row),[2]
+                  clean(row[1]),
+                  clean(row[2]),
                 ];
               });
 
               await core.summary
-                .addRaw(`\n📝 Required Actions (${exceptions.length} items):\n`) // plain text only
+                .addRaw(`\\n📝 Required Actions (${exceptions.length} items):\\n`) // plain text only
                 .addTable([
-                  [{data: 'Repository', header: true}, {data: 'Status', header: true}, {data: 'Notes', header: true}],
-                  ...exceptionRows
+                  [
+                    { data: 'Repository', header: true },
+                    { data: 'Status', header: true },
+                    { data: 'Notes', header: true },
+                  ],
+                  ...exceptionRows,
                 ])
                 .write();
             }
