@@ -200,8 +200,7 @@ jobs:
                 .write();
             } else {
               const exceptionRows = exceptions.slice(0, 1000).map(row => {
-                const repoName = clean(row[0]);
-                return [{data: repoName, href: `https://github.com/${repoName}`}, clean(row[1]), clean(row[2])];
+                return [clean(row[0]), clean(row[1]), clean(row[2])];
               });
 
               await core.summary
