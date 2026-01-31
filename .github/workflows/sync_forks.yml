@@ -114,7 +114,8 @@ jobs:
                 // --- CASE: FORK IS AHEAD (DIVERGED) ---
                 if (comp.data.ahead_by > 0) {
                   stats.ahead++;
-                  results.push([fork.full_name, "⚠️ TRIAGE", `Fork ahead by ${comp.data.ahead_by} commits`]);
+                  const commitWord = comp.data.ahead_by === 1 ? "commit" : "commits";
+                  results.push([fork.full_name, "⚠️ TRIAGE", `Fork ahead by ${comp.data.ahead_by} ${commitWord}`]);
                   continue;
                 }
 
@@ -191,7 +192,7 @@ jobs:
             // using a top-level async function or ensure surrounding function is async
             const clean = s => String(s ?? '').trim().replace(/[\u200B-\u200F\uFEFF\u00A0]/g, '');
 
-            const exceptions = results.filter(r => r[1] !== "➖ UP-TO-DATE");
+            const exceptions = results.filter(r => r !== "➖ UP-TO-DATE");[1]
 
             if (exceptions.length === 0) {
               await core.summary
@@ -199,8 +200,13 @@ jobs:
                 .write();
             } else {
               const exceptionRows = exceptions.slice(0, 1000).map(row => {
-                const repo = `https://github.com/` + row[0]; // "owner/repo"
-                return [clean(repo), clean(row[1]), clean(row[2])];
+                const repoName = clean(row); // "owner/repo"
+                const repoUrl = `https://github.com/${repoName}`;
+                return [
+                  { data: repoName, href: repoUrl },
+                  clean(row),[1]
+                  clean(row),[2]
+                ];
               });
 
               await core.summary
