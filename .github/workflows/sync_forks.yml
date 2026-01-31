@@ -199,8 +199,8 @@ jobs:
                 .write();
             } else {
               const exceptionRows = exceptions.slice(0, 1000).map(row => {
-                const repo = clean(row[0]); // "owner/repo"
-                return [`https://github.com/${repo}`, clean(row[1]), clean(row[2])];
+                const repo = `https://github.com/` + row[0]; // "owner/repo"
+                return [clean(repo), clean(row[1]), clean(row[2])];
               });
 
               await core.summary
