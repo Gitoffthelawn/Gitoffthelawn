@@ -189,11 +189,8 @@ jobs:
 
             // 9. EXCEPTION-ONLY FILTERING
             // Hide the 'Up-to-Date' rows to make the report easy to visually scan
+            // using a top-level async function or ensure surrounding function is async
             const clean = s => String(s ?? '').trim().replace(/[\u200B-\u200F\uFEFF\u00A0]/g, '');
-            const pad = (s, len) => {
-              s = String(s ?? '');
-              return s.length >= len ? s.slice(0, len - 1) + '…' : s + ' '.repeat(len - s.length);
-            };
 
             const exceptions = results.filter(r => r[1] !== "➖ UP-TO-DATE");
 
@@ -202,21 +199,16 @@ jobs:
                 .addRaw(`\n✨ **All ${forks.length} forks are perfectly in sync.**\n`)
                 .write();
             } else {
-              const header = `${pad('Repository', 40)}  ${pad('Status', 12)}  Notes`;
-              const sep    = `${'-'.repeat(40)}  ${'-'.repeat(12)}  ${'-'.repeat(40)}`;
-
-              const lines = exceptions.slice(0, 1000).map(row => {
-                const repo = clean(row[0]);
-                const status = clean(row[1]);
-                const notes = clean(row[2]);
-                const link = `[${repo}](https://github.com/${repo})`;
-                return `${pad(link, 40)}  ${pad(status, 12)}  ${notes}`;
+              const exceptionRows = exceptions.slice(0, 1000).map(row => {
+                const repo = `https://github.com/` + row[0]; // "owner/repo"
+                return [clean(repo), clean(row[1]), clean(row[2])];
               });
 
               await core.summary
-                .addRaw(`\n📝 Required Actions (${exceptions.length} items):\n`)
-                .addRaw(header + '\n')
-                .addRaw(sep + '\n')
-                .addRaw(lines.join('\n') + '\n')
+                .addRaw(`\n📝 Required Actions (${exceptions.length} items):\n`) // plain text only
+                .addTable([
+                  [{data: 'Repository', header: true}, {data: 'Status', header: true}, {data: 'Notes', header: true}],
+                  ...exceptionRows
+                ])
                 .write();
             }
