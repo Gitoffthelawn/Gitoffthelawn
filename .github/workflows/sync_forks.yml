@@ -145,8 +145,8 @@ jobs:
                       if (res.data.merge_type === 'fast-forward') {
                         branchSyncs++;
                       }
-                      // 100ms delay to prevent Secondary Rate Limit triggers
-                      await delay(100); 
+                      // 50ms delay to prevent Secondary Rate Limit triggers
+                      await delay(50); 
                     }
                   } catch (e) {
                     // 409 status indicates manual intervention is required
@@ -185,11 +185,10 @@ jobs:
             core.summary
               .addHeading("🔄 Sync Report")
               .addRaw(`Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\n`)
-              .addRaw(`<br>✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (hidden from table below) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`);
+              .addRaw(`<br>🍴 Total Forks: ${forks.length} | 🔁 Procssed: ${totalProcessed} | ✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (hidden from table below) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`);
 
             // 9. EXCEPTION-ONLY FILTERING
             // Hide the 'Up-to-Date' rows to make the report easy to visually scan
-            // using a top-level async function or ensure surrounding function is async
             const clean = s => String(s ?? '').trim().replace(/[\u200B-\u200F\uFEFF\u00A0]/g, '');
 
             const exceptions = results.filter(r => r[1] !== "➖ UP-TO-DATE");
@@ -205,7 +204,8 @@ jobs:
               });
 
               await core.summary
-                .addRaw(`\n📝 Required Actions (${exceptions.length} items):\n`) // plain text only
+                const itemWord = exceptions.length === 1 ? "item" : "items";
+                .addRaw(`\n📝 Summary (${exceptions.length} ${itemWord}):\n`) // plain text only
                 .addTable([
                   [{data: 'Repository', header: true}, {data: 'Status', header: true}, {data: 'Notes', header: true}],
                   ...exceptionRows
