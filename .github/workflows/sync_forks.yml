@@ -183,12 +183,12 @@ jobs:
             const totalProcessed = stats.synced + stats.upToDate + stats.ahead + stats.failed;
 
             function formatUTC(date) {
-              const year = date.getUTCFullYear();
-              const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-              const date = String(date.getUTCDate()).padStart(2, '0');
-              const hours = String(date.getUTCHours()).padStart(2, '0');
-              const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-              return `${year}/${month}/${date} ${hours}:${minutes}`;
+              const yearFormatted = date.getUTCFullYear();
+              const monthFormatted = String(date.getUTCMonth() + 1).padStart(2, '0');
+              const dateFormatted = String(date.getUTCDate()).padStart(2, '0');
+              const hoursFormatted = String(date.getUTCHours()).padStart(2, '0');
+              const minutesFormatted = String(date.getUTCMinutes()).padStart(2, '0');
+              return `${yearFormatted}/${monthFormatted}/${dateFormatted} ${hoursFormatted}:${minutesFormatted}`;
             }
 
             const generatedTimeUTC = formatUTC(new Date());
