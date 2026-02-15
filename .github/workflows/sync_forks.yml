@@ -181,13 +181,23 @@ jobs:
             // 8. FINAL REPORT GENERATION
             const finalRate = await github.rest.rateLimit.get();
             const totalProcessed = stats.synced + stats.upToDate + stats.ahead + stats.failed;
-            
+
+            function formatUTC(date) {
+              const y = date.getUTCFullYear();
+              const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+              const d = String(date.getUTCDate()).padStart(2, '0');
+              const hh = String(date.getUTCHours()).padStart(2, '0');
+              const mm = String(date.getUTCMinutes()).padStart(2, '0');
+              return `${y}/${m}/${d} ${hh}:${mm}`;
+            }
+
+            const generatedTimeUTC = formatUTC(new Date());
             const resetSec = finalRate.data.resources.core.reset; // seconds since epoch
-            const resetDate = new Date(resetSec * 1000);
-            const resetLocal = resetDate.toLocaleString();
-            
-            const msUntil = resetDate.getTime() - Date.now();
-            function fmtMs(ms){
+            const resetDateUTC = new Date(resetSec * 1000);
+            const resetTimeUTC = formatUTC(resetDateUTC);
+
+            const msUntil = resetDateUTC.getTime() - Date.now();
+            function fmtMs(ms) {
               if (ms <= 0) return 'now';
               const s = Math.floor(ms / 1000);
               const h = Math.floor(s / 3600);
@@ -195,13 +205,14 @@ jobs:
               const sec = s % 60;
               return (h ? `${h}h ` : '') + (m ? `${m}m ` : '') + `${sec}s`;
             }
-            
+
             core.summary
               .addHeading("🔄 Sync Report")
               .addRaw(
+                `Generated: ${generatedTimeUTC} UTC | ` +
                 `Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | ` +
                 `Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)} | ` +
-                `Resets: ${fmtMs(msUntil)} (${resetLocal})\n`
+                `Resets: ${fmtMs(msUntil)} (${resetTimeUTC} UTC)\n`
               )
               .addRaw(
                 `<br>🍴 Total Forks: ${forks.length} | 🔁 Processed: ${totalProcessed} | ` +
