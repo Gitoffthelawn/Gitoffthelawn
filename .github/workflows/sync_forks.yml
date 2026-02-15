@@ -173,7 +173,7 @@ jobs:
               } catch (err) {
                 stats.failed++;
                 // Strip special Markdown characters from error messages to preserve table formatting
-                const safeErr = (err.message || "Error").replace(/[|`]/g, "").substring(0, 45);
+                const safeErr = (err.message || "Error").replace(/[|`]/g, "").substring(0, 55);
                 results.push([fork.full_name, "❌ FAIL", safeErr]);
               }
             }
@@ -181,11 +181,33 @@ jobs:
             // 8. FINAL REPORT GENERATION
             const finalRate = await github.rest.rateLimit.get();
             const totalProcessed = stats.synced + stats.upToDate + stats.ahead + stats.failed;
-
+            
+            const resetSec = finalRate.data.resources.core.reset; // seconds since epoch
+            const resetDate = new Date(resetSec * 1000);
+            const resetLocal = resetDate.toLocaleString();
+            
+            const msUntil = resetDate.getTime() - Date.now();
+            function fmtMs(ms){
+              if (ms <= 0) return 'now';
+              const s = Math.floor(ms / 1000);
+              const h = Math.floor(s / 3600);
+              const m = Math.floor((s % 3600) / 60);
+              const sec = s % 60;
+              return (h ? `${h}h ` : '') + (m ? `${m}m ` : '') + `${sec}s`;
+            }
+            
             core.summary
               .addHeading("🔄 Sync Report")
-              .addRaw(`Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)}\n`)
-              .addRaw(`<br>🍴 Total Forks: ${forks.length} | 🔁 Procssed: ${totalProcessed} | ✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (hidden from table below) | ⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`);
+              .addRaw(
+                `Quota Usage: ${startQuota} → ${finalRate.data.resources.core.remaining} | ` +
+                `Used: ${Math.max(0, startQuota - finalRate.data.resources.core.remaining)} | ` +
+                `Resets: ${fmtMs(msUntil)} (${resetLocal})\n`
+              )
+              .addRaw(
+                `<br>🍴 Total Forks: ${forks.length} | 🔁 Processed: ${totalProcessed} | ` +
+                `✅ Synced: ${stats.synced} | ➖ Up-to-Date: ${stats.upToDate} (hidden from table below) | ` +
+                `⚠️ Ahead: ${stats.ahead} | ❌ Errors: ${stats.failed}\n`
+              );
 
             // 9. EXCEPTION-ONLY FILTERING
             // Hide the 'Up-to-Date' rows to make the report easy to visually scan
