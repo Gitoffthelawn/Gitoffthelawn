@@ -133,7 +133,7 @@ jobs:
                 let branchSyncs = 0;
                 let branchConflicts = 0;
 
-                for (const b of branches) { // Syncs all branches (add a cap if rate limited)
+                for (const b of branches) { // Sync all branches (add a cap if rate limited)
                   try {
                     const res = await github.request('POST /repos/{owner}/{repo}/merge-upstream', {
                       owner: fork.owner.login, repo: fork.name,
@@ -173,7 +173,7 @@ jobs:
               } catch (err) {
                 stats.failed++;
                 // Strip special Markdown characters from error messages to preserve table formatting
-                const safeErr = (err.message || "Error").replace(/[|`]/g, "").substring(0, 55);
+                const safeErr = (err.message || "Error").replace(/[|`]/g, "").substring(0, 60);
                 results.push([fork.full_name, "❌ FAIL", safeErr]);
               }
             }
@@ -183,16 +183,16 @@ jobs:
             const totalProcessed = stats.synced + stats.upToDate + stats.ahead + stats.failed;
 
             function formatUTC(date) {
-              const y = date.getUTCFullYear();
-              const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-              const d = String(date.getUTCDate()).padStart(2, '0');
-              const hh = String(date.getUTCHours()).padStart(2, '0');
-              const mm = String(date.getUTCMinutes()).padStart(2, '0');
-              return `${y}/${m}/${d} ${hh}:${mm}`;
+              const year = date.getUTCFullYear();
+              const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+              const date = String(date.getUTCDate()).padStart(2, '0');
+              const hours = String(date.getUTCHours()).padStart(2, '0');
+              const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+              return `${year}/${month}/${date} ${hours}:${minutes}`;
             }
 
             const generatedTimeUTC = formatUTC(new Date());
-            const resetSec = finalRate.data.resources.core.reset; // seconds since epoch
+            const resetSec = finalRate.data.resources.core.reset; // Seconds since epoch
             const resetDateUTC = new Date(resetSec * 1000);
             const resetTimeUTC = formatUTC(resetDateUTC);
 
@@ -239,7 +239,7 @@ jobs:
               const itemString = exceptions.length === 1 ? "item" : "items";
 
               await core.summary
-                .addRaw(`\n📝 Summary (${exceptions.length} ${itemString}):\n`) // plain text only
+                .addRaw(`\n📝 Summary (${exceptions.length} ${itemString}):\n`) // Plain text only
                 .addTable([
                   [{data: 'Repository', header: true}, {data: 'Status', header: true}, {data: 'Notes', header: true}],
                   ...exceptionRows
