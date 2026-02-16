@@ -173,7 +173,7 @@ jobs:
               } catch (err) {
                 stats.failed++;
                 // Strip special Markdown characters from error messages to preserve table formatting
-                const safeErr = (err.message || "Error").replace(/[|`]/g, "").substring(0, 100);
+                const safeErr = (err.message || "Error").replace(/[|`]/g, "").substring(0, 255);
                 results.push([fork.full_name, "❌ FAIL", safeErr]);
               }
             }
