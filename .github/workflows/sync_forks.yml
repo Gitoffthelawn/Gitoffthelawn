@@ -4,10 +4,10 @@ on:
   # Allow manual triggers from the 'Actions' tab
   workflow_dispatch:
   
-  # Automate the run at 02:17 UTC every day
+  # Automate the run at 22:18 UTC every day
   # The offset helps avoid peak GitHub traffic congestion
   schedule:
-    - cron: '17 2 * * *' 
+    - cron: '18 22 * * *' 
 
 jobs:
   sync-logic:
@@ -28,7 +28,7 @@ jobs:
             const delay = ms => new Promise(res => setTimeout(res, ms)); 
             
             // 2. API QUOTA MONITORING
-            // Tracking start quota helps diagnose if the process was cut short by API limits
+            // Tracking start quota helps diagnose if the process is cut short by API limits
             const initialRate = await github.rest.rateLimit.get();
             const startQuota = initialRate.data.resources.core.remaining;
 
@@ -102,7 +102,7 @@ jobs:
                     head: `${fork.owner.login}:${dBranch}`
                   });
                 } catch (e) {
-                  // Catch cases where upstream is deleted or private (404)
+                  // Catch cases where upstream is deleted or private (404 status code)
                   if (e.status === 404) {
                     results.push([fork.full_name, "❌ FAIL", `Upstream @${uOwner} hidden`]);
                     stats.failed++;
@@ -149,7 +149,7 @@ jobs:
                       await delay(50); 
                     }
                   } catch (e) {
-                    // 409 status indicates manual intervention is required
+                    // 409 status code indicates manual intervention is required
                     if (e.status === 409) branchConflicts++;
                   }
                 }
