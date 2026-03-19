@@ -1,5 +1,8 @@
 name: "Sync forks"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   # Allow manual triggers from the 'Actions' tab
   workflow_dispatch:
