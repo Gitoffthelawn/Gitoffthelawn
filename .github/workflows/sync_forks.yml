@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Triage and Sync All Branches"
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           # Inject secret Fine-grained Token as an environment variable
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
