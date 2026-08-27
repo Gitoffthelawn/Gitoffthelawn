@@ -9,7 +9,7 @@
         aria-labelledby="descId"
       >
         <title id="titleId">Gitoffthelawn&#39;s GitHub Stats, Rank: A+</title>
-        <desc id="descId">Total Stars Earned: 249, Total Commits  : 2823, Total PRs: 857, Total Issues: 1337, Total Discussions Started: 74, Contributed to (last year): 100</desc>
+        <desc id="descId">Total Stars Earned: 249, Total Commits  : 2824, Total PRs: 857, Total Issues: 1338, Total Discussions Started: 74, Contributed to (last year): 100</desc>
         <style>
           .header {
             font: 600 18px 'Segoe UI', Ubuntu, Sans-Serif;
@@ -73,7 +73,7 @@
         stroke-dashoffset: 251.32741228718345;
       }
       to {
-        stroke-dashoffset: 20.963505452028077;
+        stroke-dashoffset: 20.95940382764428;
       }
     }
   
